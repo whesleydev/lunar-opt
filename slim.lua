@@ -1,7 +1,7 @@
 -- lunar slim | mira, esp, camera, skin | roblox android
 -- arquivo unico, sem lib, sem config salvo. se algo falhar, o painel no topo diz o que.
 
-local VERSION = "slim 1.3"
+local VERSION = "slim 1.4"
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -20,6 +20,7 @@ local CFG = {
     ghost = false, offmap = false,
     fly = false, fly_speed = 55, fly_smooth = 0.35, fly_cam = true,
     fly_noclip = false, pad_show = true,
+    walk = false, walk_speed = 16,
 }
 
 local stats = { travadas = 0, erros = 0, alvos = 0 }
@@ -720,6 +721,24 @@ RunService.RenderStepped:Connect(function()
 end)
 
 
+
+-- velocidade de andar ---------------------------------------------------
+
+local walk_tick = 0
+
+RunService.Heartbeat:Connect(function()
+    walk_tick += 1
+    if walk_tick % 10 ~= 0 then return end
+    local char = lp and lp.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    if CFG.walk then
+        pcall(function() hum.WalkSpeed = CFG.walk_speed end)
+    elseif hum.WalkSpeed > 40 then
+        pcall(function() hum.WalkSpeed = 16 end)
+    end
+end)
+
 -- voo ------------------------------------------------------------------
 
 local fly = { bv = nil, up = 0, fwd = 0, side = 0, cur = Vector3.new() }
@@ -1261,6 +1280,18 @@ button("usar o centro da tela", function()
 end)
 
 label("o clique vai pro jogo, nao pra interface. escolhe um ponto fora do painel. segura o + para subir rapido.")
+
+section("andando")
+toggle("velocidade de andar", function() return CFG.walk end, function(v)
+    CFG.walk = v
+    if not v then
+        local char = lp and lp.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then pcall(function() hum.WalkSpeed = 16 end) end
+    end
+end)
+stepper("velocidade", 16, 1000, 4, function() return CFG.walk_speed end, function(v) CFG.walk_speed = v end)
+label("acima de 200 o jogo comeca a te jogar pra frente e travar em parede. segura o + para subir rapido.")
 
 section("voo")
 toggle("voar", function() return CFG.fly end, function(v)
