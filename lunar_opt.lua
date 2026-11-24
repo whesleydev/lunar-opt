@@ -26,7 +26,7 @@ end
 local genv = (getgenv and getgenv()) or {}
 if genv.LunarOpt then pcall(genv.LunarOpt.destroy) end
 
-local VERSION = "2.2"
+local VERSION = "2.3"
 
 print("[lunar.opt] carregando " .. VERSION .. " ...")
 
@@ -89,13 +89,20 @@ local CFG = {
             scale = 1, fov = false, fov_value = 70, zoom = false, zoom_value = 1,
             ambience = false, ambience_id = "", ambience_vol = 0.4, replicated = false,
             persp = "terceira", persp_dist = 6 },
+    mov = {
+        fly = false, fly_speed = 55,
+        jump = false, jump_power = 140,
+        speed = false, speed_value = 55,
+        noclip = false,
+    },
     xitadu = {
         esp_box = false, esp_name = false, esp_health = false, esp_dist = false,
         esp_skel = false, esp_tracer = false, esp_glow = false, esp_box3d = false,
         esp_fov = false, esp_team = false, esp_hue = 0,
         aim = false, aim_fov = 140, aim_smooth = 0.45, aim_part = "Cabeca",
         aim_team = false, aim_wall = false, aim_auto = false,
-        silent = false, silent_filter = "",
+        silent = false, silent_filter = "", silent_ghost = false,
+        sticky = true,
         recoil = false,
     },
 }
@@ -824,6 +831,91 @@ function Scale.apply()
     end
 end
 
+local Mov = { bv = nil, axis = { f = 0, u = 0 }, pad = nil, bound = false, tick = 0 }
+
+function Mov.release()
+    if Mov.bv then
+        pcall(function() Mov.bv:Destroy() end)
+        Mov.bv = nil
+    end
+    refresh_local()
+    local char = LocalPlayer and LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then pcall(function() hum.PlatformStand = false end) end
+end
+
+local function fly_step()
+    refresh_local()
+    local char = LocalPlayer and LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local cam = Workspace.CurrentCamera
+
+    if not CFG.mov.fly then
+        if Mov.bv then
+            pcall(function() Mov.bv:Destroy() end)
+            Mov.bv = nil
+        end
+        return
+    end
+    if not hum or not root or not cam then return end
+
+    pcall(function() hum.PlatformStand = true end)
+
+    if not Mov.bv or Mov.bv.Parent ~= root then
+        if Mov.bv then pcall(function() Mov.bv:Destroy() end) end
+        local bv = Instance.new("BodyVelocity")
+        bv.Name = "LunarFly"
+        bv.MaxForce = Vector3.new(100000, 100000, 100000)
+        bv.P = 8000
+        bv.Parent = root
+        Mov.bv = bv
+    end
+
+    local speed = CFG.mov.fly_speed or 55
+    local vel = cam.CFrame.LookVector * (Mov.axis.f * speed)
+        + Vector3.new(0, Mov.axis.u * speed, 0)
+    pcall(function() Mov.bv.Velocity = vel end)
+end
+
+local function slow_tick()
+    refresh_local()
+    local char = LocalPlayer and LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+
+    if CFG.mov.speed then
+        pcall(function() hum.WalkSpeed = CFG.mov.speed_value end)
+    end
+    if CFG.mov.jump then
+        pcall(function()
+            hum.UseJumpPower = true
+            hum.JumpPower = CFG.mov.jump_power
+        end)
+    end
+    if CFG.mov.noclip then
+        for _, d in ipairs(char:GetDescendants()) do
+            if d:IsA("BasePart") then
+                pcall(function() d.CanCollide = false end)
+            end
+        end
+    end
+end
+
+function Mov.start()
+    if Mov.bound then return end
+    Mov.bound = true
+    RunService.RenderStepped:Connect(function()
+        pcall(fly_step)
+        Mov.tick += 1
+        if Mov.tick % 12 == 0 then pcall(slow_tick) end
+    end)
+end
+
+function Mov.set_pad(visible)
+    if Mov.pad then Mov.pad.Visible = visible end
+end
+
 -- copy skin ------------------------------------------------------------
 
 local Skin = { clone = nil, links = {}, welds = {}, conn = nil, active = false }
@@ -1068,6 +1160,7 @@ local Xitadu = {
     fov_circle = nil,
     hl = {},
     box3d = {},
+    locked = nil,
 }
 
 local SKEL_R15 = {
@@ -1154,9 +1247,24 @@ end
 function Xitadu.pick_target()
     local cam = Workspace.CurrentCamera
     if not cam then return nil end
+    local x = CFG.xitadu
     local vp = cam.ViewportSize
     local center = Vector2.new(vp.X / 2, vp.Y / 2)
     local best, best_d = nil, nil
+
+    if x.sticky and Xitadu.locked then
+        local ok, part = Xitadu.valid(Xitadu.locked)
+        if ok and part then
+            local sp, on = cam:WorldToViewportPoint(part.Position)
+            if on then
+                local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                if d <= x.aim_fov * 1.6 then
+                    return { pl = Xitadu.locked, part = part }
+                end
+            end
+        end
+        Xitadu.locked = nil
+    end
 
     for _, pl in ipairs(Players:GetPlayers()) do
         local ok, part = Xitadu.valid(pl)
@@ -1164,7 +1272,7 @@ function Xitadu.pick_target()
             local sp, on = cam:WorldToViewportPoint(part.Position)
             if on then
                 local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-                if d <= CFG.xitadu.aim_fov then
+                if d <= x.aim_fov then
                     if not best_d or d < best_d then
                         best, best_d = { pl = pl, part = part }, d
                     end
@@ -1172,6 +1280,8 @@ function Xitadu.pick_target()
             end
         end
     end
+
+    if best and x.sticky then Xitadu.locked = best.pl end
     return best
 end
 
@@ -1506,13 +1616,37 @@ local function is_cframe(v)
     return ok and r == true
 end
 
-function Xitadu.install_silent()
+local function is_vector3(v)
+    if v == nil then return false end
+    local ok, r = pcall(function()
+        return type(v.X) == "number" and type(v.Y) == "number" and type(v.Z) == "number"
+            and v.LookVector == nil
+    end)
+    return ok and r == true
+end
+
+function Xitadu.install_hook()
     if Xitadu.hooked then return end
     if not hookmetamethod or not getnamecallmethod then return end
     local old
     old = hookmetamethod(game, "__namecall", function(self, ...)
         local method = getnamecallmethod()
-        if CFG.xitadu.silent and (method == "FireServer" or method == "InvokeServer") then
+        local x = CFG.xitadu
+
+        if x.silent_ghost and (method == "Raycast"
+            or method == "FindPartOnRay"
+            or method == "FindPartOnRayWithIgnoreList"
+            or method == "FindPartOnRayWithWhitelist") then
+            local target = Xitadu.pick_target()
+            if target and target.part then
+                local okp, pos = pcall(function() return target.part.Position end)
+                if okp and pos then
+                    return target.part, pos, Vector3.new(0, 1, 0), Enum.Material.Plastic
+                end
+            end
+        end
+
+        if (x.silent or x.silent_ghost) and (method == "FireServer" or method == "InvokeServer") then
             local remote_name = nil
             pcall(function() remote_name = self.Name end)
             if name_matches(remote_name) then
@@ -1523,7 +1657,17 @@ function Xitadu.install_silent()
                     if aim_cf then
                         local args = table.pack(...)
                         for i = 1, args.n do
-                            if is_cframe(args[i]) then args[i] = aim_cf end
+                            local v = args[i]
+                            if is_cframe(v) then
+                                args[i] = aim_cf
+                            elseif x.silent_ghost and is_vector3(v) then
+                                local okd, dist = pcall(function()
+                                    return (v - cam.CFrame.Position).Magnitude
+                                end)
+                                if okd and dist and dist < 1200 then
+                                    args[i] = target.part.Position
+                                end
+                            end
                         end
                         return old(self, table.unpack(args, 1, args.n))
                     end
@@ -1535,6 +1679,8 @@ function Xitadu.install_silent()
     Xitadu.old_namecall = old
     Xitadu.hooked = true
 end
+
+Xitadu.install_silent = Xitadu.install_hook
 
 -- ciclo ----------------------------------------------------------------
 
@@ -1550,7 +1696,7 @@ function Xitadu.start()
     RunService:BindToRenderStep("XitaduAim", Enum.RenderPriority.Camera.Value + 1, camera_aim)
     RunService:BindToRenderStep("XitaduRecoil", Enum.RenderPriority.Camera.Value + 2, camera_recoil)
 
-    Xitadu.install_silent()
+    Xitadu.install_hook()
 end
 
 function Xitadu.stop()
@@ -2053,7 +2199,7 @@ local function build_window()
     return true
 end
 
-local TAB_ORDER = { "desempenho", "ambiente", "visual", "xitadu", "config" }
+local TAB_ORDER = { "desempenho", "ambiente", "visual", "xitadu", "movimento", "config" }
 local tab_buttons = {}
 local tab_pages = {}
 local active_tab = nil
@@ -2571,8 +2717,12 @@ local function page_xitadu(page)
     UI.toggle(page, "ignorar time", function() return x.aim_team end, function(v)
         x.aim_team = v
     end)
-    UI.toggle(page, "so com linha de visao", function() return x.aim_wall end, function(v)
+    UI.toggle(page, "exigir linha de visao", function() return x.aim_wall end, function(v)
         x.aim_wall = v
+    end)
+    UI.toggle(page, "grudar no alvo", function() return x.sticky end, function(v)
+        x.sticky = v
+        if not v then Xitadu.locked = nil end
     end)
     UI.toggle(page, "atirar sozinho", function() return x.aim_auto end, function(v)
         x.aim_auto = v
@@ -2583,6 +2733,15 @@ local function page_xitadu(page)
         x.silent = v
         if v then
             Xitadu.install_silent()
+            if not Xitadu.hooked then
+                Toast.show("este executor nao tem hookmetamethod", 3)
+            end
+        end
+    end)
+    UI.toggle(page, "bala fantasma (atravessa parede)", function() return x.silent_ghost end, function(v)
+        x.silent_ghost = v
+        if v then
+            Xitadu.install_hook()
             if not Xitadu.hooked then
                 Toast.show("este executor nao tem hookmetamethod", 3)
             end
@@ -2608,6 +2767,116 @@ local function page_xitadu(page)
         save_config()
         Toast.show("xitadu zerado", 2)
     end, Color3.fromRGB(44, 34, 34))
+end
+
+local function page_movimento(page)
+    local m = CFG.mov
+
+    UI.header(page, "movimento")
+    UI.toggle(page, "voar", function() return m.fly end, function(v)
+        m.fly = v
+        Mov.set_pad(v)
+        if not v then
+            Mov.axis.f, Mov.axis.u = 0, 0
+            Mov.release()
+        end
+    end)
+    UI.slider(page, "velocidade do voo", 10, 200, 5, function() return m.fly_speed end, function(v)
+        m.fly_speed = v
+    end)
+    UI.label(page, "com o voo ligado aparece um painel de setas no canto. segura para andar, solta para parar.", THEME.dim, 30)
+
+    UI.toggle(page, "super pulo", function() return m.jump end, function(v)
+        m.jump = v
+    end)
+    UI.slider(page, "forca do pulo", 50, 400, 10, function() return m.jump_power end, function(v)
+        m.jump_power = v
+    end)
+
+    UI.toggle(page, "super velocidade", function() return m.speed end, function(v)
+        m.speed = v
+    end)
+    UI.slider(page, "velocidade", 20, 200, 2, function() return m.speed_value end, function(v)
+        m.speed_value = v
+    end)
+
+    UI.toggle(page, "atravessar parede", function() return m.noclip end, function(v)
+        m.noclip = v
+        if not v then
+            local char = LocalPlayer and LocalPlayer.Character
+            if char then
+                for _, d in ipairs(char:GetDescendants()) do
+                    if d:IsA("BasePart") then pcall(function() d.CanCollide = true end) end
+                end
+            end
+        end
+    end)
+
+    UI.header(page, "controles de voo")
+    UI.button(page, "mostrar painel", function()
+        if Mov.pad then
+            Mov.pad.Visible = not Mov.pad.Visible
+        else
+            Toast.show("painel ainda nao montou", 2)
+        end
+    end, Color3.fromRGB(30, 36, 46))
+
+    UI.label(page, "o servidor ainda simula colisao em alguns jogos. nesses, atravessar parede so funciona em game que confia no cliente.", THEME.dim, 34)
+end
+
+local function build_fly_pad()
+    if not ui_root or Mov.pad then return end
+
+    local pad = Instance.new("Frame")
+    pad.Name = "LunarFlyPad"
+    pad.Size = UDim2.fromOffset(116, 156)
+    pad.Position = UDim2.new(1, -126, 1, -172)
+    pad.BackgroundColor3 = Color3.fromRGB(13, 15, 19)
+    pad.BackgroundTransparency = 0.15
+    pad.BorderSizePixel = 0
+    pad.Visible = false
+    pad.Parent = ui_root
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 10)
+    c.Parent = pad
+    Mov.pad = pad
+
+    local function hold(label, order, on, off)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1, -12, 0, 32)
+        btn.Position = UDim2.fromOffset(6, 6 + (order - 1) * 36)
+        btn.BackgroundColor3 = Color3.fromRGB(28, 32, 40)
+        btn.BorderSizePixel = 0
+        btn.AutoButtonColor = false
+        btn.Font = Enum.Font.Code
+        btn.TextSize = 12
+        btn.TextColor3 = Color3.fromRGB(200, 210, 225)
+        btn.Text = label
+        btn.Parent = pad
+        local cc = Instance.new("UICorner")
+        cc.CornerRadius = UDim.new(0, 6)
+        cc.Parent = btn
+
+        btn.InputBegan:Connect(function(input)
+            local t = input.UserInputType
+            if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
+                btn.BackgroundColor3 = Color3.fromRGB(34, 74, 52)
+                on()
+            end
+        end)
+        btn.InputEnded:Connect(function(input)
+            local t = input.UserInputType
+            if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
+                btn.BackgroundColor3 = Color3.fromRGB(28, 32, 40)
+                off()
+            end
+        end)
+    end
+
+    hold("cima", 1, function() Mov.axis.u = 1 end, function() Mov.axis.u = 0 end)
+    hold("frente", 2, function() Mov.axis.f = 1 end, function() Mov.axis.f = 0 end)
+    hold("tras", 3, function() Mov.axis.f = -1 end, function() Mov.axis.f = 0 end)
+    hold("baixo", 4, function() Mov.axis.u = -1 end, function() Mov.axis.u = 0 end)
 end
 
 local function page_config(page)
@@ -2764,6 +3033,7 @@ function destroy()
     Perf.running = false
     pcall(Xitadu.stop)
     pcall(Persp.release)
+    pcall(Mov.release)
     Skin.release()
     Viewer.close()
     Aura.release()
@@ -2788,6 +3058,7 @@ genv.LunarOpt = {
     env = Env,
     xitadu = Xitadu,
     persp = Persp,
+    mov = Mov,
 }
 
 local function guard(label, fn, ...)
@@ -2809,6 +3080,8 @@ if built then
     guard("aba ambiente", function() page_ambiente(tab_pages["ambiente"]) end)
     guard("aba visual", function() page_visual(tab_pages["visual"]) end)
     guard("aba xitadu", function() page_xitadu(tab_pages["xitadu"]) end)
+    guard("aba movimento", function() page_movimento(tab_pages["movimento"]) end)
+    guard("painel de voo", build_fly_pad)
     guard("aba config", function() page_config(tab_pages["config"]) end)
     guard("xitadu", Xitadu.start)
 
@@ -2822,6 +3095,7 @@ if built then
     guard("overlay", Overlay.apply)
     guard("som", Ambience.apply)
     guard("perspectiva", Persp.apply)
+    guard("movimento", Mov.start)
 
     if LocalPlayer then
         LocalPlayer.CharacterAdded:Connect(function()
