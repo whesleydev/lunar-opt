@@ -26,7 +26,7 @@ end
 local genv = (getgenv and getgenv()) or {}
 if genv.LunarOpt then pcall(genv.LunarOpt.destroy) end
 
-local VERSION = "2.5"
+local VERSION = "2.6"
 
 print("[lunar.opt] carregando " .. VERSION .. " ...")
 
@@ -90,7 +90,7 @@ local CFG = {
     vis = { aura = false, aura_color = 190, hide_acc = false, scale_on = false,
             scale = 1, fov = false, fov_value = 70, zoom = false, zoom_value = 1,
             ambience = false, ambience_id = "", ambience_vol = 0.4, replicated = false,
-            persp = "terceira", persp_dist = 6 },
+            persp = "livre", persp_dist = 8 },
     mov = {
         fly = false, fly_speed = 55,
         jump = false, jump_power = 140,
@@ -102,6 +102,7 @@ local CFG = {
         esp_skel = false, esp_tracer = false, esp_glow = false, esp_box3d = false,
         esp_fov = false, esp_team = false, esp_hue = 0,
         aim = false, aim_fov = 140, aim_smooth = 0.45, aim_part = "Cabeca",
+        aim_lead = 1, aim_speed = 1500,
         aim_team = false, aim_wall = false, aim_auto = false,
         silent = false, silent_filter = "", silent_ghost = false,
         sticky = true, team_mode = "auto", esp_master = false, team_green = true,
@@ -725,16 +726,29 @@ local Aura = { emitter = nil }
 local Persp = { bound = false }
 
 local function persp_step()
-    if CFG.vis.persp ~= "segunda" then return end
+    local mode = CFG.vis.persp
+    if not mode or mode == "livre" then return end
     refresh_local()
     local char = LocalPlayer and LocalPlayer.Character
     local head = char and char:FindFirstChild("Head")
     local cam = Workspace.CurrentCamera
     if not head or not cam then return end
+
+    local dist = CFG.vis.persp_dist or 8
     pcall(function()
-        local dist = CFG.vis.persp_dist or 6
-        local eye = head.Position + head.CFrame.LookVector * dist + Vector3.new(0, 0.45, 0)
-        cam.CFrame = CFrame.lookAt(eye, head.Position)
+        local rot = cam.CFrame.Rotation
+        if mode == "primeira" then
+            cam.CFrame = CFrame.new(head.Position + Vector3.new(0, 0.35, 0)) * rot
+            head.LocalTransparencyModifier = 1
+        elseif mode == "segunda" then
+            local eye = head.Position + rot.LookVector * dist + Vector3.new(0, 0.35, 0)
+            cam.CFrame = CFrame.lookAt(eye, head.Position)
+            head.LocalTransparencyModifier = 0
+        else
+            local eye = head.Position - rot.LookVector * dist + Vector3.new(0, 1, 0)
+            cam.CFrame = CFrame.new(eye) * rot
+            head.LocalTransparencyModifier = 0
+        end
     end)
 end
 
@@ -744,21 +758,22 @@ function Persp.apply()
     Persp.bound = false
     if not LocalPlayer then return end
 
-    local mode = CFG.vis.persp
-    pcall(function() LocalPlayer.CameraMode = Enum.CameraMode.Classic end)
-    put(LocalPlayer, "CameraMinZoomDistance", 0.5)
-
+    local mode = CFG.vis.persp or "livre"
     if mode == "primeira" then
         pcall(function() LocalPlayer.CameraMode = Enum.CameraMode.LockFirstPerson end)
+        put(LocalPlayer, "CameraMinZoomDistance", 0.5)
         put(LocalPlayer, "CameraMaxZoomDistance", 0.5)
-    elseif mode == "segunda" then
-        put(LocalPlayer, "CameraMaxZoomDistance", 16)
-        pcall(function()
-            RunService:BindToRenderStep("LunarPersp", Enum.RenderPriority.Camera.Value + 3, persp_step)
-        end)
-        Persp.bound = true
     else
+        pcall(function() LocalPlayer.CameraMode = Enum.CameraMode.Classic end)
+        put(LocalPlayer, "CameraMinZoomDistance", 0.5)
         put(LocalPlayer, "CameraMaxZoomDistance", 128)
+    end
+
+    if mode ~= "livre" then
+        local okb = pcall(function()
+            RunService:BindToRenderStep("LunarPersp", Enum.RenderPriority.Camera.Value + 5, persp_step)
+        end)
+        Persp.bound = okb
     end
 end
 
@@ -1051,12 +1066,16 @@ end
 
 -- viewer 3d ------------------------------------------------------------
 
-local Viewer = { frame = nil, conn = nil, model = nil }
+local Viewer = { frame = nil, gui = nil, conn = nil, model = nil }
 
 function Viewer.close()
     if Viewer.conn then
         pcall(function() Viewer.conn:Disconnect() end)
         Viewer.conn = nil
+    end
+    if Viewer.gui then
+        pcall(function() Viewer.gui:Destroy() end)
+        Viewer.gui = nil
     end
     if Viewer.frame then
         pcall(function() Viewer.frame:Destroy() end)
@@ -1067,35 +1086,59 @@ end
 
 function Viewer.open(target)
     Viewer.close()
+    refresh_local()
     local char = target and target.Character
-    if not char then return false end
+    if not char then
+        print("[lunar.opt] preview: jogador sem personagem")
+        return false
+    end
 
     local holder
-    local ok = pcall(function()
-        holder = (gethui and gethui()) or game:GetService("CoreGui")
+    pcall(function()
+        if gethui then holder = gethui() end
     end)
-    if not ok or not holder then
+    if not holder then
         holder = LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui")
     end
-    if not holder then return false end
+    if not holder then
+        print("[lunar.opt] preview: sem container")
+        return false
+    end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "LunarViewerGui"
+    gui.ResetOnSpawn = false
+    gui.DisplayOrder = 2000
+    local okp = pcall(function() gui.Parent = holder end)
+    if not okp or not gui.Parent then
+        local pg = LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui")
+        if pg then pcall(function() gui.Parent = pg end) end
+    end
+    if not gui.Parent then
+        print("[lunar.opt] preview: container recusou")
+        return false
+    end
+    Viewer.gui = gui
 
     local frame = Instance.new("Frame")
     frame.Name = "LunarViewer"
-    frame.Size = UDim2.fromOffset(200, 240)
-    frame.Position = UDim2.new(0.5, -100, 0.5, -120)
+    frame.Size = UDim2.fromOffset(210, 250)
+    frame.Position = UDim2.new(0.5, -105, 0.5, -125)
     frame.BackgroundColor3 = Color3.fromRGB(12, 14, 18)
     frame.BorderSizePixel = 0
-    frame.Parent = holder
+    frame.Active = true
+    frame.Parent = gui
     local corner = Instance.new("UICorner")
     corner.CornerRadius = UDim.new(0, 10)
     corner.Parent = frame
+    Viewer.frame = frame
 
     local vp = Instance.new("ViewportFrame")
     vp.Size = UDim2.new(1, -12, 1, -42)
     vp.Position = UDim2.fromOffset(6, 6)
     vp.BackgroundColor3 = Color3.fromRGB(18, 21, 27)
     vp.BorderSizePixel = 0
-    vp.Ambient = Color3.fromRGB(200, 200, 210)
+    vp.Ambient = Color3.fromRGB(190, 190, 200)
     vp.LightColor = Color3.fromRGB(255, 255, 255)
     vp.Parent = frame
     local vc = Instance.new("UICorner")
@@ -1106,21 +1149,36 @@ function Viewer.open(target)
     world.Parent = vp
 
     local cam = Instance.new("Camera")
-    cam.FieldOfView = 32
+    cam.FieldOfView = 35
     cam.Parent = vp
     vp.CurrentCamera = cam
 
-    local model = char:Clone()
-    strip_scripts(model)
-    model.Name = "LunarPreview"
+    local okClone, model = pcall(function() return char:Clone() end)
+    if not okClone or not model then
+        print("[lunar.opt] preview: clone falhou: " .. tostring(model))
+        Viewer.close()
+        return false
+    end
+    pcall(strip_scripts, model)
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    if hum then pcall(function() hum:Destroy() end) end
     for _, d in ipairs(model:GetDescendants()) do
         if d:IsA("BasePart") then
             d.Anchored = true
             d.CanCollide = false
+            d.Massless = true
         end
     end
-    model:PivotTo(CFrame.new(0, 0, 0))
+    pcall(function() model:PivotTo(CFrame.new()) end)
     model.Parent = world
+
+    local focus = Vector3.new(0, 2.6, 0)
+    local radius = 11
+    local okb, cf, size = pcall(function() return model:GetBoundingBox() end)
+    if okb and cf and size then
+        focus = cf.Position
+        radius = math.max(size.Magnitude * 0.95, 5)
+    end
 
     local close = Instance.new("TextButton")
     close.Size = UDim2.new(1, -12, 0, 28)
@@ -1135,14 +1193,13 @@ function Viewer.open(target)
     local cc = Instance.new("UICorner")
     cc.CornerRadius = UDim.new(0, 6)
     cc.Parent = close
-    close.MouseButton1Click:Connect(Viewer.close)
+    close.MouseButton1Click:Connect(function() Viewer.close() end)
 
     local angle = 0
-    Viewer.frame, Viewer.model = frame, model
+    Viewer.model = model
     Viewer.conn = RunService.RenderStepped:Connect(function(dt)
-        angle += dt * 0.55
-        local focus = Vector3.new(0, 2.6, 0)
-        local eye = focus + Vector3.new(math.sin(angle) * 11, 1.4, math.cos(angle) * 11)
+        angle += (dt or 0.016) * 0.7
+        local eye = focus + Vector3.new(math.sin(angle) * radius, radius * 0.22, math.cos(angle) * radius)
         cam.CFrame = CFrame.new(eye, focus)
     end)
 
@@ -1597,7 +1654,20 @@ local function camera_aim_impl()
     local target = Xitadu.pick_target()
     if not target then return end
 
-    local look = CFrame.lookAt(cam.CFrame.Position, target.part.Position)
+    local aim_pos = target.part.Position
+    if (x.aim_lead or 0) > 0 then
+        local okv, vel = pcall(function() return target.part.AssemblyLinearVelocity end)
+        if not okv or not vel then
+            pcall(function() vel = target.part.Velocity end)
+        end
+        if vel then
+            local dist = (aim_pos - cam.CFrame.Position).Magnitude
+            local travel = dist / math.max(x.aim_speed or 1500, 1)
+            aim_pos = aim_pos + vel * travel * x.aim_lead
+        end
+    end
+
+    local look = CFrame.lookAt(cam.CFrame.Position, aim_pos)
     local alpha = math.clamp(x.aim_smooth, 0.05, 1)
     cam.CFrame = cam.CFrame:Lerp(look, alpha)
 
@@ -1607,7 +1677,10 @@ local function camera_aim_impl()
             Xitadu.last_fire = now
             local char = LocalPlayer and LocalPlayer.Character
             local tool = char and char:FindFirstChildOfClass("Tool")
-            if tool then pcall(function() tool:Activate() end) end
+            if tool then
+                cam.CFrame = CFrame.lookAt(cam.CFrame.Position, aim_pos)
+                pcall(function() tool:Activate() end)
+            end
         end
     end
 end
@@ -2045,8 +2118,9 @@ function UI.cycle(parent, label, options, getv, setv)
             if type(v) == "table" then val = v[1] end
             setv(val)
         end
+        local dd
         local ok = pcall(function()
-            parent:CreateDropdown({
+            dd = parent:CreateDropdown({
                 Name = label,
                 Options = options,
                 CurrentOption = { getv() },
@@ -2055,9 +2129,9 @@ function UI.cycle(parent, label, options, getv, setv)
                 Callback = pick,
             })
         end)
-        if not ok then
+        if not ok or not dd then
             pcall(function()
-                parent:CreateDropdown({
+                dd = parent:CreateDropdown({
                     Name = label,
                     Options = options,
                     CurrentOption = getv(),
@@ -2066,7 +2140,7 @@ function UI.cycle(parent, label, options, getv, setv)
                 })
             end)
         end
-        return
+        return dd
     end
     local btn = new("TextButton", {
         Size = UDim2.new(1, -8, 0, 34),
@@ -2734,9 +2808,33 @@ local function page_visual(page)
             if other ~= LocalPlayer then names[#names + 1] = other.Name end
         end
         local chosen = names[1] or ""
-        UI.cycle(page, "jogador", (#names > 0) and names or { "ninguem" },
+
+        local function coleta()
+            local fresh = {}
+            for _, other in ipairs(Players:GetPlayers()) do
+                if other ~= LocalPlayer then fresh[#fresh + 1] = other.Name end
+            end
+            return fresh
+        end
+
+        local dd = UI.cycle(page, "jogador", (#names > 0) and names or { "ninguem" },
             function() return chosen end,
             function(v) chosen = v end)
+
+        local function rebuild()
+            local fresh = coleta()
+            if #fresh == 0 then fresh = { "ninguem" } end
+            if chosen == "" or not table.find(fresh, chosen) then chosen = fresh[1] end
+            if dd then
+                pcall(function() dd:Refresh(fresh, true) end)
+            end
+            Toast.show("lista: " .. #(coleta()) .. " jogadores", 2)
+        end
+
+        UI.button(page, "atualizar lista de jogadores", rebuild, Color3.fromRGB(30, 36, 46))
+        Players.PlayerAdded:Connect(function() task.delay(2, rebuild) end)
+        Players.PlayerRemoving:Connect(function() task.delay(2, rebuild) end)
+        task.delay(4, rebuild)
         UI.button(page, "copiar skin", function()
             local pl = Players:FindFirstChild(chosen)
             if not pl then
@@ -2772,6 +2870,15 @@ local function page_visual(page)
         refresh_players()
     end
 
+    UI.button(page, "atualizar lista de jogadores", function()
+        refresh_players()
+        local n = 0
+        for _, other in ipairs(Players:GetPlayers()) do
+            if other ~= LocalPlayer then n += 1 end
+        end
+        Toast.show("lista: " .. n .. " jogadores", 2)
+    end, Color3.fromRGB(30, 36, 46))
+
     UI.button(page, "soltar skin", function()
         Skin.release()
         Toast.show("skin solta", 2)
@@ -2800,16 +2907,16 @@ local function page_visual(page)
     end)
 
     UI.header(page, "visao")
-    UI.cycle(page, "perspectiva", { "primeira", "segunda", "terceira" },
+    UI.cycle(page, "perspectiva", { "livre", "primeira", "segunda", "terceira" },
         function() return v.persp end,
         function(x)
             v.persp = x
             Persp.apply()
         end)
-    UI.slider(page, "distancia da segunda", 2, 16, 1, function() return v.persp_dist end, function(x)
+    UI.slider(page, "distancia da camera", 2, 20, 1, function() return v.persp_dist end, function(x)
         v.persp_dist = x
     end)
-    UI.label(page, "segunda pessoa poe a camera na frente do personagem olhando de volta. o movimento inverte, e isso e do modo, nao do script.", THEME.dim, 32)
+    UI.label(page, "livre deixa a camera do jogo em paz. os outros tres o script assume a camera e ignora o zoom do jogo. na segunda pessoa o movimento inverte, e do modo.", THEME.dim, 32)
 
     UI.header(page, "camera")
     UI.toggle(page, "campo de visao", function() return v.fov end, function(x)
@@ -2889,6 +2996,12 @@ local function page_xitadu(page)
     end)
     UI.slider(page, "suavidade", 0.05, 1, 0.05, function() return x.aim_smooth end, function(v)
         x.aim_smooth = v
+    end)
+    UI.slider(page, "antecipacao de movimento", 0, 2, 0.1, function() return x.aim_lead end, function(v)
+        x.aim_lead = v
+    end)
+    UI.slider(page, "velocidade do projetil", 200, 3000, 50, function() return x.aim_speed end, function(v)
+        x.aim_speed = v
     end)
 
     UI.header(page, "esp")
