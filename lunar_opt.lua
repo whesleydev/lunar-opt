@@ -26,7 +26,7 @@ end
 local genv = (getgenv and getgenv()) or {}
 if genv.LunarOpt then pcall(genv.LunarOpt.destroy) end
 
-local VERSION = "2.7"
+local VERSION = "2.8"
 
 print("[lunar.opt] carregando " .. VERSION .. " ...")
 
@@ -3159,7 +3159,7 @@ local function page_movimento(page)
     UI.toggle(page, "super velocidade", function() return m.speed end, function(v)
         m.speed = v
     end)
-    UI.slider(page, "velocidade", 20, 200, 2, function() return m.speed_value end, function(v)
+    UI.slider(page, "velocidade", 16, 1000, 4, function() return m.speed_value end, function(v)
         m.speed_value = v
     end)
 
