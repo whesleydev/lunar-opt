@@ -26,7 +26,7 @@ end
 local genv = (getgenv and getgenv()) or {}
 if genv.LunarOpt then pcall(genv.LunarOpt.destroy) end
 
-local VERSION = "2.4"
+local VERSION = "2.5"
 
 print("[lunar.opt] carregando " .. VERSION .. " ...")
 
@@ -71,6 +71,7 @@ local CFG = {
     tab = "desempenho",
     watchdog = true,
     usar_lib = true,
+    status_panel = true,
     perf = {
         enabled = true, shadows = true, post_fx = true, particles = true,
         lighting = true, quality = true, mesh = true, textures = false,
@@ -832,6 +833,8 @@ function Scale.apply()
     end
 end
 
+local refresh_status = nil
+
 local Mov = { bv = nil, axis = { f = 0, u = 0 }, pad = nil, bound = false, tick = 0 }
 
 function Mov.release()
@@ -910,6 +913,7 @@ function Mov.start()
         pcall(fly_step)
         Mov.tick += 1
         if Mov.tick % 12 == 0 then pcall(slow_tick) end
+        if Mov.tick % 60 == 0 and refresh_status then pcall(refresh_status) end
     end)
 end
 
@@ -1197,6 +1201,7 @@ end
 local reports = {}
 
 function Xitadu.report(tag, err)
+    Xitadu.last_error = tag .. ": " .. tostring(err)
     local now = os.clock()
     if reports[tag] and now - reports[tag] < 5 then return end
     reports[tag] = now
@@ -1797,6 +1802,7 @@ local UI = { conns = {}, refreshers = {}, pages = {} }
 
 local RF = nil
 local RF_WINDOW = nil
+local RF_FAIL = nil
 local RAYFIELD_URL = "https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua"
 local flag_n = 0
 
@@ -2929,6 +2935,10 @@ local function page_xitadu(page)
     end)
 
     UI.header(page, "diagnostico")
+    UI.toggle(page, "painel de status na tela", function() return CFG.status_panel end, function(v)
+        CFG.status_panel = v
+        if status_frame then status_frame.Visible = v end
+    end)
     UI.label(page, "se algo parar de funcionar, toca no teste e le o console do executor. ele diz exatamente onde quebrou.", THEME.dim, 32)
     UI.button(page, "testar combate", function()
         local cam = Workspace.CurrentCamera
@@ -3071,6 +3081,71 @@ local function build_fly_pad()
     hold("frente", 2, function() Mov.axis.f = 1 end, function() Mov.axis.f = 0 end)
     hold("tras", 3, function() Mov.axis.f = -1 end, function() Mov.axis.f = 0 end)
     hold("baixo", 4, function() Mov.axis.u = -1 end, function() Mov.axis.u = 0 end)
+end
+
+
+local status_frame, status_label
+
+local function status_lines()
+    refresh_local()
+    local total, alvos = 0, 0
+    for _, pl in ipairs(Players:GetPlayers()) do
+        if pl ~= LocalPlayer then
+            total += 1
+            if Xitadu.valid(pl) then alvos += 1 end
+        end
+    end
+    local lines = {
+        "lunar.opt " .. VERSION .. (RF and "  rayfield" or "  menu proprio"),
+        "draw " .. (DRAWING and "ok" or "sem")
+            .. "  hook " .. (Xitadu.hooked and "ok" or "sem")
+            .. "  alvos " .. alvos .. "/" .. total,
+        "esp " .. (Xitadu.esp_active() and "on" or "off")
+            .. "  mira " .. (CFG.xitadu.aim and "on" or "off"),
+    }
+    if Xitadu.last_error then
+        lines[#lines + 1] = "erro: " .. string.sub(tostring(Xitadu.last_error), 1, 40)
+    end
+    return table.concat(lines, "\n")
+end
+
+local function build_status_panel()
+    local parent = gethui and select(2, pcall(gethui))
+    local container = ui_root or (parent ~= false and parent) or nil
+    if not container or status_label then return end
+
+    local f = Instance.new("Frame")
+    f.Name = "LunarStatus"
+    f.Size = UDim2.fromOffset(216, 64)
+    f.Position = UDim2.fromOffset(8, 8)
+    f.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
+    f.BackgroundTransparency = 0.2
+    f.BorderSizePixel = 0
+    f.Visible = CFG.status_panel
+    f.Parent = container
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 8)
+    c.Parent = f
+    status_frame = f
+
+    local t = Instance.new("TextLabel")
+    t.Size = UDim2.new(1, -12, 1, -10)
+    t.Position = UDim2.fromOffset(6, 5)
+    t.BackgroundTransparency = 1
+    t.Font = Enum.Font.Code
+    t.TextSize = 10
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    t.TextYAlignment = Enum.TextYAlignment.Top
+    t.TextColor3 = Color3.fromRGB(150, 200, 170)
+    t.Text = "lunar.opt " .. VERSION
+    t.Parent = f
+    status_label = t
+    refresh_status = function()
+        if status_label and status_label.Parent then
+            status_label.Text = status_lines()
+        end
+    end
+    refresh_status()
 end
 
 local function page_config(page)
@@ -3270,16 +3345,19 @@ local function try_rayfield()
 
     local ok, src = pcall(function() return game:HttpGet(RAYFIELD_URL, true) end)
     if not ok or type(src) ~= "string" or #src < 20000 then
+        RF_FAIL = "nao baixou"
         print("[lunar.opt] rayfield nao baixou, usando menu proprio")
         return false
     end
     local chunk = loadstring(src)
     if not chunk then
+        RF_FAIL = "nao compilou"
         print("[lunar.opt] rayfield nao compilou, usando menu proprio")
         return false
     end
     local okLib, lib = pcall(chunk)
     if not okLib or type(lib) ~= "table" or not lib.CreateWindow then
+        RF_FAIL = "nao iniciou"
         print("[lunar.opt] rayfield nao iniciou, usando menu proprio")
         return false
     end
@@ -3293,6 +3371,7 @@ local function try_rayfield()
         })
     end)
     if not okWin or not win then
+        RF_FAIL = "janela recusada"
         print("[lunar.opt] rayfield recusou a janela, usando menu proprio")
         return false
     end
@@ -3325,6 +3404,7 @@ if built then
     guard("aba xitadu", function() page_xitadu(tab_pages["combate"]) end)
     guard("aba movimento", function() page_movimento(tab_pages["movimento"]) end)
     guard("painel de voo", build_fly_pad)
+    guard("painel de status", build_status_panel)
     guard("aba config", function() page_config(tab_pages["config"]) end)
     guard("xitadu", Xitadu.start)
 
@@ -3351,6 +3431,8 @@ if built then
             refresh_players()
         end)
     end
+
+    if RF_FAIL then Toast.show("menu proprio (rayfield " .. RF_FAIL .. ")", 5) end
 
     if CFG.mode == nil then
         guard("seletor de modo", show_mode_modal)
