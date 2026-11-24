@@ -26,7 +26,7 @@ end
 local genv = (getgenv and getgenv()) or {}
 if genv.LunarOpt then pcall(genv.LunarOpt.destroy) end
 
-local VERSION = "2.1"
+local VERSION = "2.2"
 
 print("[lunar.opt] carregando " .. VERSION .. " ...")
 
@@ -87,7 +87,8 @@ local CFG = {
                 tint = false, tint_strength = 0.12, hue = 200 },
     vis = { aura = false, aura_color = 190, hide_acc = false, scale_on = false,
             scale = 1, fov = false, fov_value = 70, zoom = false, zoom_value = 1,
-            ambience = false, ambience_id = "", ambience_vol = 0.4, replicated = false },
+            ambience = false, ambience_id = "", ambience_vol = 0.4, replicated = false,
+            persp = "terceira", persp_dist = 6 },
     xitadu = {
         esp_box = false, esp_name = false, esp_health = false, esp_dist = false,
         esp_skel = false, esp_tracer = false, esp_glow = false, esp_box3d = false,
@@ -711,6 +712,51 @@ function Cam.apply()
 end
 
 local Aura = { emitter = nil }
+
+local Persp = { bound = false }
+
+local function persp_step()
+    if CFG.vis.persp ~= "segunda" then return end
+    refresh_local()
+    local char = LocalPlayer and LocalPlayer.Character
+    local head = char and char:FindFirstChild("Head")
+    local cam = Workspace.CurrentCamera
+    if not head or not cam then return end
+    pcall(function()
+        local dist = CFG.vis.persp_dist or 6
+        local eye = head.Position + head.CFrame.LookVector * dist + Vector3.new(0, 0.45, 0)
+        cam.CFrame = CFrame.lookAt(eye, head.Position)
+    end)
+end
+
+function Persp.apply()
+    refresh_local()
+    pcall(function() RunService:UnbindFromRenderStep("LunarPersp") end)
+    Persp.bound = false
+    if not LocalPlayer then return end
+
+    local mode = CFG.vis.persp
+    pcall(function() LocalPlayer.CameraMode = Enum.CameraMode.Classic end)
+    put(LocalPlayer, "CameraMinZoomDistance", 0.5)
+
+    if mode == "primeira" then
+        pcall(function() LocalPlayer.CameraMode = Enum.CameraMode.LockFirstPerson end)
+        put(LocalPlayer, "CameraMaxZoomDistance", 0.5)
+    elseif mode == "segunda" then
+        put(LocalPlayer, "CameraMaxZoomDistance", 16)
+        pcall(function()
+            RunService:BindToRenderStep("LunarPersp", Enum.RenderPriority.Camera.Value + 3, persp_step)
+        end)
+        Persp.bound = true
+    else
+        put(LocalPlayer, "CameraMaxZoomDistance", 128)
+    end
+end
+
+function Persp.release()
+    pcall(function() RunService:UnbindFromRenderStep("LunarPersp") end)
+    Persp.bound = false
+end
 
 function Aura.release()
     if Aura.emitter then
@@ -2416,6 +2462,18 @@ local function page_visual(page)
         v.scale = x; Scale.apply()
     end)
 
+    UI.header(page, "visao")
+    UI.cycle(page, "perspectiva", { "primeira", "segunda", "terceira" },
+        function() return v.persp end,
+        function(x)
+            v.persp = x
+            Persp.apply()
+        end)
+    UI.slider(page, "distancia da segunda", 2, 16, 1, function() return v.persp_dist end, function(x)
+        v.persp_dist = x
+    end)
+    UI.label(page, "segunda pessoa poe a camera na frente do personagem olhando de volta. o movimento inverte, e isso e do modo, nao do script.", THEME.dim, 32)
+
     UI.header(page, "camera")
     UI.toggle(page, "campo de visao", function() return v.fov end, function(x)
         v.fov = x; Cam.apply()
@@ -2705,6 +2763,7 @@ end
 function destroy()
     Perf.running = false
     pcall(Xitadu.stop)
+    pcall(Persp.release)
     Skin.release()
     Viewer.close()
     Aura.release()
@@ -2728,6 +2787,7 @@ genv.LunarOpt = {
     skin = Skin,
     env = Env,
     xitadu = Xitadu,
+    persp = Persp,
 }
 
 local function guard(label, fn, ...)
@@ -2761,6 +2821,7 @@ if built then
     guard("clima", Climate.apply)
     guard("overlay", Overlay.apply)
     guard("som", Ambience.apply)
+    guard("perspectiva", Persp.apply)
 
     if LocalPlayer then
         LocalPlayer.CharacterAdded:Connect(function()
@@ -2769,6 +2830,7 @@ if built then
             HideAcc.apply()
             Scale.apply()
             Cam.apply()
+            Persp.apply()
             refresh_players()
         end)
     end
