@@ -1,7 +1,7 @@
 -- lunar slim | mira, esp, camera, skin | roblox android
 -- arquivo unico, sem lib, sem config salvo. se algo falhar, o painel no topo diz o que.
 
-local VERSION = "slim 1.4"
+local VERSION = "slim 1.6"
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -21,9 +21,12 @@ local CFG = {
     fly = false, fly_speed = 55, fly_smooth = 0.35, fly_cam = true,
     fly_noclip = false, pad_show = true,
     walk = false, walk_speed = 16,
+    graph = "auto", no_shadows = false, no_postfx = false,
+    no_particles = false, no_textures = false, no_sound = false,
+    fps_show = true,
 }
 
-local stats = { travadas = 0, erros = 0, alvos = 0 }
+local stats = { travadas = 0, erros = 0, alvos = 0, fps = 0 }
 local last_error = nil
 
 local function fail(tag, err)
@@ -653,7 +656,11 @@ local function ghost_hide()
     end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum then
-        pcall(function() hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None end)
+        pcall(function()
+            hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+            hum.NameDisplayDistance = 0
+            hum.HealthDisplayDistance = 0
+        end)
     end
 end
 
@@ -673,7 +680,11 @@ local function ghost_show()
     end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum then
-        pcall(function() hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer end)
+        pcall(function()
+            hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer
+            hum.NameDisplayDistance = 100
+            hum.HealthDisplayDistance = 100
+        end)
     end
 end
 
@@ -736,6 +747,105 @@ RunService.Heartbeat:Connect(function()
         pcall(function() hum.WalkSpeed = CFG.walk_speed end)
     elseif hum.WalkSpeed > 40 then
         pcall(function() hum.WalkSpeed = 16 end)
+    end
+end)
+
+
+-- leveza ---------------------------------------------------------------
+
+local perf = { saved = {} }
+
+local function set_quality(level)
+    return pcall(function()
+        local us = UserSettings():GetService("UserGameSettings")
+        if level == "auto" then
+            us.SavedQualityLevel = Enum.SavedQualitySetting.Automatic
+        else
+            us.SavedQualityLevel = Enum.SavedQualitySetting["Q" .. tostring(level)]
+        end
+    end)
+end
+
+local function remember(inst, key, value)
+    local k = tostring(inst)
+    if perf.saved[k] == nil then
+        perf.saved[k] = { inst = inst, key = key, value = value }
+    end
+end
+
+local function apply_shadows()
+    pcall(function()
+        local light = game:GetService("Lighting")
+        if CFG.no_shadows then
+            light.GlobalShadows = false
+        else
+            light.GlobalShadows = true
+        end
+    end)
+end
+
+local function apply_postfx()
+    pcall(function()
+        local light = game:GetService("Lighting")
+        for _, fx in ipairs(light:GetChildren()) do
+            if fx:IsA("PostEffect") then
+                if CFG.no_postfx then
+                    remember(fx, "Enabled", fx.Enabled)
+                    fx.Enabled = false
+                elseif perf.saved[tostring(fx)] then
+                    fx.Enabled = perf.saved[tostring(fx)].value
+                end
+            end
+        end
+    end)
+end
+
+local function sweep_world()
+    local p = pcall(function()
+        local n = 0
+        for _, d in ipairs(workspace:GetDescendants()) do
+            n += 1
+            if n > 6000 then break end
+            if d:IsA("ParticleEmitter") or d:IsA("Smoke") or d:IsA("Fire") or d:IsA("Sparkles") then
+                if CFG.no_particles then
+                    remember(d, "Enabled", d.Enabled)
+                    d.Enabled = false
+                elseif perf.saved[tostring(d)] and perf.saved[tostring(d)].key == "Enabled" then
+                    d.Enabled = perf.saved[tostring(d)].value
+                end
+            elseif d:IsA("Texture") or d:IsA("Decal") then
+                if CFG.no_textures then
+                    remember(d, "Transparency", d.Transparency)
+                    d.Transparency = 1
+                elseif perf.saved[tostring(d)] and perf.saved[tostring(d)].key == "Transparency" then
+                    d.Transparency = perf.saved[tostring(d)].value
+                end
+            elseif d:IsA("Sound") then
+                if CFG.no_sound then
+                    remember(d, "Volume", d.Volume)
+                    d.Volume = 0
+                elseif perf.saved[tostring(d)] and perf.saved[tostring(d)].key == "Volume" then
+                    d.Volume = perf.saved[tostring(d)].value
+                end
+            end
+        end
+    end)
+    return p
+end
+
+local function apply_perf()
+    set_quality(CFG.graph)
+    apply_shadows()
+    apply_postfx()
+end
+
+local perf_tick = 0
+
+RunService.Heartbeat:Connect(function()
+    perf_tick += 1
+    if perf_tick % 300 ~= 0 then return end
+    if CFG.no_particles or CFG.no_textures or CFG.no_sound then
+        pcall(sweep_world)
     end
 end)
 
@@ -1212,6 +1322,8 @@ end
 
 -- montagem da interface ------------------------------------------------
 
+label("mira - esp - invisivel - camera - auto click - andando - voo - leveza - skins")
+
 section("mira")
 local paint_aim = toggle("aimbot", function() return CFG.aim end, function(v) CFG.aim = v end)
 toggle("atirar sozinho", function() return CFG.auto end, function(v) CFG.auto = v end)
@@ -1234,6 +1346,22 @@ toggle("esqueleto", function() return CFG.esp_skel end, function(v) CFG.esp_skel
 if not DRAWING then
     label("este executor nao expoe a API Drawing. sem ela o esp 2d nao desenha nada.")
 end
+
+section("invisibilidade")
+toggle("invisivel para npc", function() return CFG.ghost end, function(v)
+    CFG.ghost = v
+    if not v then pcall(ghost_show) end
+end)
+toggle("sumir do mapa", function() return CFG.offmap end, function(v)
+    if v then
+        offmap_enter()
+        CFG.offmap = true
+    else
+        CFG.offmap = false
+        offmap_exit()
+    end
+end)
+label("invisivel para npc: o corpo some, raycast e toque atravessam voce, e some o nome e a barra de vida. e o que derruba npc que te avista ou te toca. sumir do mapa: o corpo vai pra 4000 studs e a camera fica no lugar, pra npc que ja te marcou e segue so pela posicao.")
 
 section("camera")
 cycle("perspectiva", { "livre", "primeira", "segunda", "terceira" },
@@ -1309,21 +1437,56 @@ toggle("sem colisao voando", function() return CFG.fly_noclip end, function(v) C
 toggle("mostrar painel de setas", function() return CFG.pad_show end, function(v) CFG.pad_show = v end)
 label("o direcional do jogo continua funcionando no ar. as setas do painel servem pra subir, descer e empurrar sem soltar o dedo do direcional. arrasta o painel pelo canto.")
 
-section("invisibilidade")
-toggle("modo fantasma", function() return CFG.ghost end, function(v)
-    CFG.ghost = v
-    if not v then pcall(ghost_show) end
+section("leveza")
+cycle("nivel grafico", { "auto", "10", "8", "6", "4", "2", "1" },
+    function() return CFG.graph end,
+    function(v)
+        CFG.graph = v
+        apply_perf()
+    end)
+toggle("sem sombras", function() return CFG.no_shadows end, function(v)
+    CFG.no_shadows = v
+    apply_shadows()
 end)
-toggle("sair do mapa", function() return CFG.offmap end, function(v)
-    if v then
-        offmap_enter()
-        CFG.offmap = true
-    else
-        CFG.offmap = false
-        offmap_exit()
-    end
+toggle("sem pos processamento", function() return CFG.no_postfx end, function(v)
+    CFG.no_postfx = v
+    apply_postfx()
 end)
-label("fantasma: voce fica invisivel e os raycasts do jogo atravessam voce, entao npc que usa visao ou toque perde voce. sair do mapa: o corpo vai pra longe e a camera fica onde estava, so pra npc que persegue por posicao.")
+toggle("sem particulas", function() return CFG.no_particles end, function(v)
+    CFG.no_particles = v
+    pcall(sweep_world)
+end)
+toggle("sem texturas e decais", function() return CFG.no_textures end, function(v)
+    CFG.no_textures = v
+    pcall(sweep_world)
+end)
+toggle("sem som", function() return CFG.no_sound end, function(v)
+    CFG.no_sound = v
+    pcall(sweep_world)
+end)
+toggle("mostrar fps no topo", function() return CFG.fps_show end, function(v) CFG.fps_show = v end)
+button("modo leve (aplica tudo)", function()
+    CFG.graph = "2"
+    CFG.no_shadows = true
+    CFG.no_postfx = true
+    CFG.no_particles = true
+    CFG.no_textures = true
+    apply_perf()
+    pcall(sweep_world)
+    status.Text = "modo leve aplicado"
+end, Color3.fromRGB(30, 46, 38))
+button("restaurar o que deu", function()
+    CFG.graph = "auto"
+    CFG.no_shadows = false
+    CFG.no_postfx = false
+    CFG.no_particles = false
+    CFG.no_textures = false
+    CFG.no_sound = false
+    apply_perf()
+    pcall(sweep_world)
+    status.Text = "restaurado"
+end, Color3.fromRGB(40, 36, 44))
+label("nivel grafico e o ajuste do proprio roblox. os outros mexem so no que roda no teu cliente. particulas e texturas precisam de uma varredura, entao voltam aos poucos.")
 
 section("skins")
 button("atualizar lista de jogadores", function()
@@ -1364,6 +1527,17 @@ RunService.RenderStepped:Connect(function()
     if not ok then fail("esp", err) end
 end)
 
+local fps_frames, fps_time = 0, 0
+
+RunService.Heartbeat:Connect(function(dt)
+    fps_frames += 1
+    fps_time += dt or 0.016
+    if fps_time >= 1 then
+        stats.fps = math.floor(fps_frames / fps_time + 0.5)
+        fps_frames, fps_time = 0, 0
+    end
+end)
+
 task.spawn(function()
     while true do
         task.wait(1)
@@ -1378,6 +1552,9 @@ task.spawn(function()
         stats.alvos = alvos
         local text = string.format("draw %s | alvos %d | travadas %d | erros %d",
             DRAWING and "ok" or "sem", alvos, stats.travadas, stats.erros)
+        if CFG.fps_show then
+            text = text .. string.format(" | fps %d", stats.fps)
+        end
         if CFG.ac_on or ac.clicks > 0 then
             text = text .. string.format(" | cliques %d", ac.clicks)
         end
