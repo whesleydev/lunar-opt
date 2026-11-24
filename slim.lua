@@ -1,7 +1,7 @@
 -- lunar slim | mira, esp, camera, skin | roblox android
 -- arquivo unico, sem lib, sem config salvo. se algo falhar, o painel no topo diz o que.
 
-local VERSION = "slim 1.1"
+local VERSION = "slim 1.2"
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -17,6 +17,7 @@ local CFG = {
     persp = "livre", dist = 8,
     ac_on = false, ac_cps = 12, ac_limit = 0, ac_mode = "os dois",
     ac_x = 0, ac_y = 0,
+    ghost = false, offmap = false,
 }
 
 local stats = { travadas = 0, erros = 0, alvos = 0 }
@@ -289,6 +290,28 @@ local function stepper(text, minv, maxv, stepv, getv, setv)
 
     minus.MouseButton1Click:Connect(function() nudge(-1) end)
     plus.MouseButton1Click:Connect(function() nudge(1) end)
+
+    local function held(btn, dir)
+        local held = false
+        btn.InputBegan:Connect(function(input)
+            local t = input.UserInputType
+            if t ~= Enum.UserInputType.Touch and t ~= Enum.UserInputType.MouseButton1 then return end
+            held = true
+            task.spawn(function()
+                task.wait(0.4)
+                while held do
+                    nudge(dir)
+                    task.wait(0.08)
+                end
+            end)
+        end)
+        btn.InputEnded:Connect(function()
+            held = false
+        end)
+    end
+
+    held(minus, -1)
+    held(plus, 1)
 
     return function(v)
         setv(v)
@@ -605,9 +628,104 @@ local function esp_loop()
     end
 end
 
+
+-- invisibilidade -------------------------------------------------------
+
+local offmap = { saved = nil }
+local ghost = { on = false }
+
+local function ghost_hide()
+    local char = lp and lp.Character
+    if not char then return end
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BasePart") then
+            pcall(function()
+                d.Transparency = 1
+                d.CanQuery = false
+                d.CanTouch = false
+            end)
+        elseif d:IsA("Decal") or d:IsA("Texture") then
+            pcall(function() d.Transparency = 1 end)
+        end
+    end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        pcall(function() hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None end)
+    end
+end
+
+local function ghost_show()
+    local char = lp and lp.Character
+    if not char then return end
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BasePart") then
+            pcall(function()
+                d.Transparency = 0
+                d.CanQuery = true
+                d.CanTouch = true
+            end)
+        elseif d:IsA("Decal") or d:IsA("Texture") then
+            pcall(function() d.Transparency = 0 end)
+        end
+    end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        pcall(function() hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer end)
+    end
+end
+
+local function offmap_enter()
+    local char = lp and lp.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    offmap.saved = root.CFrame
+end
+
+local function offmap_exit()
+    local char = lp and lp.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if root and offmap.saved then
+        pcall(function() root.CFrame = offmap.saved end)
+    end
+    offmap.saved = nil
+end
+
+local ghost_tick = 0
+
+RunService.RenderStepped:Connect(function()
+    if CFG.ghost then
+        ghost_tick += 1
+        if not ghost.on or ghost_tick % 20 == 0 then
+            ghost.on = true
+            pcall(ghost_hide)
+        end
+    elseif ghost.on then
+        ghost.on = false
+        pcall(ghost_show)
+    end
+
+    if CFG.offmap then
+        local char = lp and lp.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if root then
+            if not offmap.saved then offmap.saved = root.CFrame end
+            pcall(function()
+                root.CFrame = CFrame.new(0, 4000, 0)
+                root.AssemblyLinearVelocity = Vector3.new()
+            end)
+        end
+    end
+end)
+
 -- camera ---------------------------------------------------------------
 
 local function camera_loop()
+    if CFG.offmap and offmap.saved then
+        pcall(function()
+            cam.CFrame = CFrame.new(offmap.saved.Position) * cam.CFrame.Rotation
+        end)
+        return
+    end
     if CFG.persp == "livre" then return end
     local char = lp and lp.Character
     local head = char and char:FindFirstChild("Head")
@@ -762,22 +880,31 @@ local function click_once()
     end
 end
 
-task.spawn(function()
-    while true do
-        if not CFG.ac_on then
-            task.wait(0.1)
-        else
-            if CFG.ac_limit > 0 and ac.left <= 0 then
-                CFG.ac_on = false
-                if paint_ac then paint_ac() end
-                task.wait(0.1)
-            else
-                pcall(click_once)
-                ac.clicks += 1
-                if CFG.ac_limit > 0 then ac.left -= 1 end
-                task.wait(1 / math.clamp(CFG.ac_cps, 1, 30))
-            end
-        end
+local ac_budget = 0
+
+RunService.Heartbeat:Connect(function(dt)
+    if not CFG.ac_on then
+        ac_budget = 0
+        return
+    end
+    if CFG.ac_limit > 0 and ac.left <= 0 then
+        CFG.ac_on = false
+        ac_budget = 0
+        if paint_ac then paint_ac() end
+        return
+    end
+
+    ac_budget += (dt or 0.016) * math.clamp(CFG.ac_cps, 1, 1000)
+    local n = math.floor(ac_budget)
+    if n <= 0 then return end
+    ac_budget -= n
+    if n > 150 then n = 150 end
+
+    for _ = 1, n do
+        if CFG.ac_limit > 0 and ac.left <= 0 then break end
+        pcall(click_once)
+        ac.clicks += 1
+        if CFG.ac_limit > 0 then ac.left -= 1 end
     end
 end)
 
@@ -913,7 +1040,7 @@ paint_ac = toggle("ligar auto click", function() return CFG.ac_on end, function(
 end)
 cycle("modo", { "os dois", "ferramenta", "toque" },
     function() return CFG.ac_mode end, function(v) CFG.ac_mode = v end)
-stepper("cliques por segundo", 1, 30, 1, function() return CFG.ac_cps end, function(v) CFG.ac_cps = v end)
+stepper("cliques por segundo", 1, 1000, 1, function() return CFG.ac_cps end, function(v) CFG.ac_cps = v end)
 stepper("quantidade (0 = infinito)", 0, 500, 10, function() return CFG.ac_limit end, function(v) CFG.ac_limit = v end)
 
 local coord_label = label("posicao: aguardando")
@@ -943,7 +1070,23 @@ button("usar o centro da tela", function()
     paint_coords()
 end)
 
-label("o clique vai pro jogo, nao pra interface. escolhe um ponto fora do painel.")
+label("o clique vai pro jogo, nao pra interface. escolhe um ponto fora do painel. segura o + para subir rapido.")
+
+section("invisibilidade")
+toggle("modo fantasma", function() return CFG.ghost end, function(v)
+    CFG.ghost = v
+    if not v then pcall(ghost_show) end
+end)
+toggle("sair do mapa", function() return CFG.offmap end, function(v)
+    if v then
+        offmap_enter()
+        CFG.offmap = true
+    else
+        CFG.offmap = false
+        offmap_exit()
+    end
+end)
+label("fantasma: voce fica invisivel e os raycasts do jogo atravessam voce, entao npc que usa visao ou toque perde voce. sair do mapa: o corpo vai pra longe e a camera fica onde estava, so pra npc que persegue por posicao.")
 
 section("skins")
 button("atualizar lista de jogadores", function()
