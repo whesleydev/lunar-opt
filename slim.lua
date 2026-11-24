@@ -1,7 +1,7 @@
 -- lunar slim | mira, esp, camera, skin | roblox android
 -- arquivo unico, sem lib, sem config salvo. se algo falhar, o painel no topo diz o que.
 
-local VERSION = "slim 1.2"
+local VERSION = "slim 1.3"
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -18,6 +18,8 @@ local CFG = {
     ac_on = false, ac_cps = 12, ac_limit = 0, ac_mode = "os dois",
     ac_x = 0, ac_y = 0,
     ghost = false, offmap = false,
+    fly = false, fly_speed = 55, fly_smooth = 0.35, fly_cam = true,
+    fly_noclip = false, pad_show = true,
 }
 
 local stats = { travadas = 0, erros = 0, alvos = 0 }
@@ -717,6 +719,194 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
+
+-- voo ------------------------------------------------------------------
+
+local fly = { bv = nil, up = 0, fwd = 0, side = 0, cur = Vector3.new() }
+local pad = { gui = nil, frame = nil }
+
+local function fly_off()
+    if fly.bv then
+        pcall(function() fly.bv:Destroy() end)
+        fly.bv = nil
+    end
+    fly.cur = Vector3.new()
+    fly.up, fly.fwd, fly.side = 0, 0, 0
+end
+
+local function fly_step()
+    if not CFG.fly then
+        if fly.bv then fly_off() end
+        return
+    end
+
+    local char = lp and lp.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not hum or not root or not cam then return end
+
+    if not fly.bv or fly.bv.Parent ~= root then
+        fly_off()
+        local bv = Instance.new("BodyVelocity")
+        bv.Name = "LunarFly"
+        bv.MaxForce = Vector3.new(1000000, 1000000, 1000000)
+        bv.P = 1250
+        bv.Parent = root
+        fly.bv = bv
+    end
+
+    if hum.PlatformStand then
+        pcall(function() hum.PlatformStand = false end)
+    end
+
+    local look = cam.CFrame.LookVector
+    local flat = Vector3.new(look.X, 0, look.Z)
+    if flat.Magnitude < 0.01 then
+        flat = Vector3.new(0, 0, -1)
+    else
+        flat = flat.Unit
+    end
+    local right = flat:Cross(Vector3.new(0, 1, 0))
+
+    local md = hum.MoveDirection
+    local fwd = md:Dot(flat) + fly.fwd
+    local side = md:Dot(right) + fly.side
+    local vert = fly.up
+
+    local want
+    if CFG.fly_cam then
+        want = look * fwd + right * side + Vector3.new(0, vert, 0)
+    else
+        want = flat * fwd + right * side + Vector3.new(0, vert, 0)
+    end
+
+    if want.Magnitude > 0.01 then
+        want = want.Unit * CFG.fly_speed
+    else
+        want = Vector3.new()
+    end
+
+    local alpha = math.clamp(CFG.fly_smooth, 0.05, 1)
+    fly.cur = fly.cur:Lerp(want, alpha)
+    pcall(function() fly.bv.Velocity = fly.cur end)
+
+    if CFG.fly_noclip then
+        for _, d in ipairs(char:GetDescendants()) do
+            if d:IsA("BasePart") then
+                pcall(function() d.CanCollide = false end)
+            end
+        end
+    end
+end
+
+local function build_pad()
+    if pad.gui then return end
+
+    local g = Instance.new("ScreenGui")
+    g.Name = "LunarFlyPad"
+    g.ResetOnSpawn = false
+    g.DisplayOrder = 1100
+    pcall(function() g.Parent = holder() end)
+    pad.gui = g
+
+    local f = Instance.new("Frame")
+    f.Size = UDim2.fromOffset(152, 152)
+    f.Position = UDim2.new(1, -172, 1, -200)
+    f.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
+    f.BackgroundTransparency = 0.28
+    f.BorderSizePixel = 0
+    f.Active = true
+    f.Visible = false
+    f.Parent = g
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 10)
+    c.Parent = f
+    pad.frame = f
+
+    local function hold(text, pos, on, off)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.fromOffset(42, 42)
+        b.Position = UDim2.fromOffset(pos[1], pos[2])
+        b.BackgroundColor3 = Color3.fromRGB(26, 30, 38)
+        b.BorderSizePixel = 0
+        b.AutoButtonColor = false
+        b.Font = Enum.Font.Code
+        b.TextSize = 13
+        b.TextColor3 = Color3.fromRGB(190, 200, 215)
+        b.Text = text
+        b.Parent = f
+        local cc = Instance.new("UICorner")
+        cc.CornerRadius = UDim.new(0, 8)
+        cc.Parent = b
+
+        b.InputBegan:Connect(function(input)
+            local t = input.UserInputType
+            if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
+                b.BackgroundColor3 = Color3.fromRGB(34, 74, 52)
+                on()
+            end
+        end)
+        b.InputEnded:Connect(function(input)
+            local t = input.UserInputType
+            if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
+                b.BackgroundColor3 = Color3.fromRGB(26, 30, 38)
+                off()
+            end
+        end)
+        return b
+    end
+
+    hold("^", { 55, 6 }, function() fly.up = 1 end, function() fly.up = 0 end)
+    hold("<", { 8, 55 }, function() fly.side = -1 end, function() fly.side = 0 end)
+    hold("=", { 55, 55 }, function() fly.fwd = 1 end, function() fly.fwd = 0 end)
+    hold(">", { 102, 55 }, function() fly.side = 1 end, function() fly.side = 0 end)
+    hold("v", { 55, 104 }, function() fly.fwd = -1 end, function() fly.fwd = 0 end)
+    hold("ll", { 102, 104 }, function() fly.up = -1 end, function() fly.up = 0 end)
+
+    local grab = Instance.new("TextLabel")
+    grab.Size = UDim2.fromOffset(42, 42)
+    grab.Position = UDim2.fromOffset(8, 6)
+    grab.BackgroundTransparency = 1
+    grab.Font = Enum.Font.Code
+    grab.TextSize = 16
+    grab.TextColor3 = Color3.fromRGB(90, 100, 116)
+    grab.Text = "::"
+    grab.Parent = f
+
+    local dragging, startPos, startInput = false, nil, nil
+    f.InputBegan:Connect(function(input)
+        local t = input.UserInputType
+        if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            startPos = f.Position
+            startInput = input.Position
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType ~= Enum.UserInputType.Touch
+            and input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+        local delta = input.Position - startInput
+        f.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end)
+    UIS.InputEnded:Connect(function(input)
+        local t = input.UserInputType
+        if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+end
+
+RunService.RenderStepped:Connect(function()
+    local ok, err = pcall(fly_step)
+    if not ok then fail("voo", err) end
+    if pad.frame then
+        pad.frame.Visible = CFG.fly and CFG.pad_show
+    end
+end)
+
 -- camera ---------------------------------------------------------------
 
 local function camera_loop()
@@ -1071,6 +1261,22 @@ button("usar o centro da tela", function()
 end)
 
 label("o clique vai pro jogo, nao pra interface. escolhe um ponto fora do painel. segura o + para subir rapido.")
+
+section("voo")
+toggle("voar", function() return CFG.fly end, function(v)
+    CFG.fly = v
+    if v then
+        pcall(build_pad)
+    else
+        pcall(fly_off)
+    end
+end)
+stepper("velocidade do voo", 10, 300, 5, function() return CFG.fly_speed end, function(v) CFG.fly_speed = v end)
+stepper("suavidade do voo", 0.1, 1, 0.05, function() return CFG.fly_smooth end, function(v) CFG.fly_smooth = v end)
+toggle("voar para onde a camera olha", function() return CFG.fly_cam end, function(v) CFG.fly_cam = v end)
+toggle("sem colisao voando", function() return CFG.fly_noclip end, function(v) CFG.fly_noclip = v end)
+toggle("mostrar painel de setas", function() return CFG.pad_show end, function(v) CFG.pad_show = v end)
+label("o direcional do jogo continua funcionando no ar. as setas do painel servem pra subir, descer e empurrar sem soltar o dedo do direcional. arrasta o painel pelo canto.")
 
 section("invisibilidade")
 toggle("modo fantasma", function() return CFG.ghost end, function(v)
