@@ -26,7 +26,7 @@ end
 local genv = (getgenv and getgenv()) or {}
 if genv.LunarOpt then pcall(genv.LunarOpt.destroy) end
 
-local VERSION = "2.3"
+local VERSION = "2.4"
 
 print("[lunar.opt] carregando " .. VERSION .. " ...")
 
@@ -70,6 +70,7 @@ local CFG = {
     mode = nil,
     tab = "desempenho",
     watchdog = true,
+    usar_lib = true,
     perf = {
         enabled = true, shadows = true, post_fx = true, particles = true,
         lighting = true, quality = true, mesh = true, textures = false,
@@ -102,7 +103,7 @@ local CFG = {
         aim = false, aim_fov = 140, aim_smooth = 0.45, aim_part = "Cabeca",
         aim_team = false, aim_wall = false, aim_auto = false,
         silent = false, silent_filter = "", silent_ghost = false,
-        sticky = true,
+        sticky = true, team_mode = "auto", esp_master = false, team_green = true,
         recoil = false,
     },
 }
@@ -1193,6 +1194,48 @@ local function dremove(obj)
     pcall(function() obj:Remove() end)
 end
 
+local reports = {}
+
+function Xitadu.report(tag, err)
+    local now = os.clock()
+    if reports[tag] and now - reports[tag] < 5 then return end
+    reports[tag] = now
+    print("[lunar.opt] combate/" .. tag .. ": " .. tostring(err))
+end
+
+local teams_cache = { t = 0, v = false }
+
+local function game_has_teams()
+    local now = os.clock()
+    if now - teams_cache.t < 3 then return teams_cache.v end
+    local ok, has = pcall(function()
+        return #game:GetService("Teams"):GetChildren() > 0
+    end)
+    teams_cache.t = now
+    teams_cache.v = ok and has or false
+    return teams_cache.v
+end
+
+function Xitadu.same_team(pl)
+    refresh_local()
+    if not pl or pl == LocalPlayer then return true end
+    local mode = CFG.xitadu.team_mode or "auto"
+    if mode == "desligado" then return false end
+    if not game_has_teams() then return false end
+
+    local a = pl.Team
+    local b = LocalPlayer and LocalPlayer.Team
+    if a and b and (mode == "auto" or mode == "time") then
+        return a == b
+    end
+    if mode == "auto" or mode == "cor" then
+        local ca = pl.TeamColor and pl.TeamColor.Color
+        local cb = LocalPlayer and LocalPlayer.TeamColor and LocalPlayer.TeamColor.Color
+        if ca and cb then return ca == cb end
+    end
+    return false
+end
+
 local function part_of(char, name)
     local p = char:FindFirstChild(name)
     if p and p:IsA("BasePart") then return p end
@@ -1223,7 +1266,7 @@ function Xitadu.valid(pl)
     if not char then return false end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return false end
-    if x.aim_team and LocalPlayer and pl.Team and LocalPlayer.Team and pl.Team == LocalPlayer.Team then
+    if x.aim_team and Xitadu.same_team(pl) then
         return false
     end
     local part = Xitadu.find_part(char)
@@ -1335,7 +1378,7 @@ end
 
 local function col_for(pl)
     local x = CFG.xitadu
-    if LocalPlayer and pl.Team and LocalPlayer.Team and pl.Team == LocalPlayer.Team then
+    if x.team_green and Xitadu.same_team(pl) then
         return Color3.fromRGB(120, 210, 160)
     end
     return Color3.fromHSV((x.esp_hue or 0) / 360, 0.75, 1)
@@ -1351,8 +1394,7 @@ function Xitadu.draw_one(pl)
         return
     end
 
-    if x.esp_team and LocalPlayer and pl.Team and LocalPlayer.Team
-        and pl.Team == LocalPlayer.Team then
+    if x.esp_team and Xitadu.same_team(pl) then
         Xitadu.clean(pl)
         return
     end
@@ -1508,7 +1550,12 @@ function Xitadu.esp_update()
     local alive = {}
     for _, pl in ipairs(Players:GetPlayers()) do
         if pl ~= LocalPlayer then
-            if pcall(Xitadu.draw_one, pl) then alive[pl] = true end
+            local okd, derr = pcall(Xitadu.draw_one, pl)
+            if okd then
+                alive[pl] = true
+            else
+                Xitadu.report("esp", derr)
+            end
         end
     end
     for pl in pairs(Xitadu.draws) do
@@ -1537,7 +1584,7 @@ end
 
 -- mira -----------------------------------------------------------------
 
-local function camera_aim()
+local function camera_aim_impl()
     local x = CFG.xitadu
     if not x.aim then return end
     local cam = Workspace.CurrentCamera
@@ -1557,6 +1604,16 @@ local function camera_aim()
             local tool = char and char:FindFirstChildOfClass("Tool")
             if tool then pcall(function() tool:Activate() end) end
         end
+    end
+end
+
+local aim_errors = 0
+
+local function camera_aim(dt)
+    local ok, err = pcall(camera_aim_impl, dt)
+    if not ok then
+        aim_errors += 1
+        if aim_errors <= 3 then Xitadu.report("mira", err) end
     end
 end
 
@@ -1737,6 +1794,16 @@ local THEME = {
 }
 
 local UI = { conns = {}, refreshers = {}, pages = {} }
+
+local RF = nil
+local RF_WINDOW = nil
+local RAYFIELD_URL = "https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua"
+local flag_n = 0
+
+local function next_flag()
+    flag_n += 1
+    return "lunar_" .. flag_n
+end
 local ui_root, ui_frame, ui_body, ui_tabbar, ui_fps
 
 local function ui_conn(c)
@@ -1763,10 +1830,15 @@ local function add_corner(inst, r)
 end
 
 function UI.refresh_all()
+    if RF then return end
     for _, fn in ipairs(UI.refreshers) do pcall(fn) end
 end
 
 function UI.header(parent, text)
+    if RF then
+        pcall(function() parent:CreateSection(string.upper(text)) end)
+        return
+    end
     return new("TextLabel", {
         Size = UDim2.new(1, -8, 0, 24),
         BackgroundTransparency = 1,
@@ -1779,6 +1851,10 @@ function UI.header(parent, text)
 end
 
 function UI.label(parent, text, color, height)
+    if RF then
+        pcall(function() parent:CreateLabel(text) end)
+        return
+    end
     return new("TextLabel", {
         Size = UDim2.new(1, -8, 0, height or 30),
         BackgroundTransparency = 1,
@@ -1793,6 +1869,17 @@ function UI.label(parent, text, color, height)
 end
 
 function UI.toggle(parent, label, getv, setv)
+    if RF then
+        local ok = pcall(function()
+            parent:CreateToggle({
+                Name = label,
+                CurrentValue = getv() and true or false,
+                Flag = next_flag(),
+                Callback = function(state) setv(state) end,
+            })
+        end)
+        if ok then return end
+    end
     local row = new("TextButton", {
         Size = UDim2.new(1, -8, 0, 32),
         BackgroundColor3 = THEME.row,
@@ -1848,6 +1935,19 @@ function UI.toggle(parent, label, getv, setv)
 end
 
 function UI.slider(parent, label, minv, maxv, step, getv, setv)
+    if RF then
+        local ok = pcall(function()
+            parent:CreateSlider({
+                Name = label,
+                Range = { minv, maxv },
+                Increment = step,
+                CurrentValue = getv(),
+                Flag = next_flag(),
+                Callback = function(v) setv(v) end,
+            })
+        end)
+        if ok then return end
+    end
     local row = new("Frame", {
         Size = UDim2.new(1, -8, 0, 44),
         BackgroundColor3 = THEME.row,
@@ -1933,6 +2033,35 @@ function UI.slider(parent, label, minv, maxv, step, getv, setv)
 end
 
 function UI.cycle(parent, label, options, getv, setv)
+    if RF then
+        local function pick(v)
+            local val = v
+            if type(v) == "table" then val = v[1] end
+            setv(val)
+        end
+        local ok = pcall(function()
+            parent:CreateDropdown({
+                Name = label,
+                Options = options,
+                CurrentOption = { getv() },
+                MultipleOptions = false,
+                Flag = next_flag(),
+                Callback = pick,
+            })
+        end)
+        if not ok then
+            pcall(function()
+                parent:CreateDropdown({
+                    Name = label,
+                    Options = options,
+                    CurrentOption = getv(),
+                    Flag = next_flag(),
+                    Callback = pick,
+                })
+            end)
+        end
+        return
+    end
     local btn = new("TextButton", {
         Size = UDim2.new(1, -8, 0, 34),
         BackgroundColor3 = THEME.row,
@@ -1967,6 +2096,10 @@ function UI.cycle(parent, label, options, getv, setv)
 end
 
 function UI.button(parent, label, cb, color)
+    if RF then
+        pcall(function() parent:CreateButton({ Name = label, Callback = cb }) end)
+        return
+    end
     local btn = new("TextButton", {
         Size = UDim2.new(1, -8, 0, 34),
         BackgroundColor3 = color or Color3.fromRGB(34, 74, 52),
@@ -1983,6 +2116,19 @@ function UI.button(parent, label, cb, color)
 end
 
 function UI.input(parent, label, placeholder, cb, initial)
+    if RF then
+        pcall(function()
+            parent:CreateInput({
+                Name = label,
+                CurrentValue = initial or "",
+                PlaceholderText = placeholder or "",
+                RemoveTextAfterFocusLost = false,
+                Flag = next_flag(),
+                Callback = cb,
+            })
+        end)
+        return
+    end
     UI.header(parent, label)
     local box = new("TextBox", {
         Size = UDim2.new(1, -8, 0, 34),
@@ -2008,6 +2154,12 @@ end
 local Toast = { label = nil }
 
 function Toast.show(text, seconds)
+    if RF then
+        pcall(function()
+            RF:Notify({ Title = "lunar.opt", Content = text, Duration = seconds or 3 })
+        end)
+        return
+    end
     if not ui_root then return end
     if not Toast.label or not Toast.label.Parent then
         Toast.label = new("TextLabel", {
@@ -2082,6 +2234,7 @@ local function build_window()
         return false
     end
     ui_root = root
+    if RF then return true end
 
     local vw = (Camera and Camera.ViewportSize.X) or 360
     local width = math.clamp(math.floor(vw * 0.88), 280, 360)
@@ -2199,7 +2352,7 @@ local function build_window()
     return true
 end
 
-local TAB_ORDER = { "desempenho", "ambiente", "visual", "xitadu", "movimento", "config" }
+local TAB_ORDER = { "desempenho", "ambiente", "visual", "combate", "movimento", "config" }
 local tab_buttons = {}
 local tab_pages = {}
 local active_tab = nil
@@ -2208,6 +2361,7 @@ local function select_tab(name)
     if active_tab == name then return end
     active_tab = name
     CFG.tab = name
+    if RF then return end
     for n, page in pairs(tab_pages) do
         page.Visible = (n == name)
     end
@@ -2218,6 +2372,14 @@ local function select_tab(name)
 end
 
 local function build_tabs()
+    if RF then
+        for _, name in ipairs(TAB_ORDER) do
+            local okT, tab = pcall(function() return RF_WINDOW:CreateTab(name) end)
+            if okT and tab then tab_pages[name] = tab end
+        end
+        return
+    end
+
     for i, name in ipairs(TAB_ORDER) do
         local btn = new("TextButton", {
             Size = UDim2.fromOffset(0, 28),
@@ -2560,26 +2722,49 @@ local function page_visual(page)
     UI.header(page, "skins")
     UI.label(page, "toca em copiar para vestir a skin de alguem. segura o nome por meio segundo para o modo replicado.", THEME.dim, 32)
 
-    local wrap = new("Frame", {
-        Size = UDim2.new(1, -8, 0, 180),
-        BackgroundColor3 = Color3.fromRGB(18, 21, 27),
-        BorderSizePixel = 0,
-    }, page)
-    add_corner(wrap, 8)
+    if RF then
+        local names = {}
+        for _, other in ipairs(Players:GetPlayers()) do
+            if other ~= LocalPlayer then names[#names + 1] = other.Name end
+        end
+        local chosen = names[1] or ""
+        UI.cycle(page, "jogador", (#names > 0) and names or { "ninguem" },
+            function() return chosen end,
+            function(v) chosen = v end)
+        UI.button(page, "copiar skin", function()
+            local pl = Players:FindFirstChild(chosen)
+            if not pl then
+                Toast.show("escolhe um jogador valido", 2)
+                return
+            end
+            local ok, msg = Skin.copy_from(pl)
+            Toast.show(msg, 3)
+        end)
+        UI.button(page, "ver em 3d", function()
+            local pl = Players:FindFirstChild(chosen)
+            if pl then Viewer.open(pl) end
+        end, Color3.fromRGB(30, 36, 46))
+    else
+        local wrap = new("Frame", {
+            Size = UDim2.new(1, -8, 0, 180),
+            BackgroundColor3 = Color3.fromRGB(18, 21, 27),
+            BorderSizePixel = 0,
+        }, page)
+        add_corner(wrap, 8)
 
-    player_container = new("ScrollingFrame", {
-        Size = UDim2.new(1, -8, 1, -8),
-        Position = UDim2.fromOffset(4, 4),
-        BackgroundTransparency = 1,
-        BorderSizePixel = 0,
-        ScrollBarThickness = 2,
-        ScrollBarImageColor3 = Color3.fromRGB(70, 78, 90),
-        CanvasSize = UDim2.new(),
-        AutomaticCanvasSize = Enum.AutomaticSize.Y,
-    }, wrap)
-    local pl = new("UIListLayout", { Padding = UDim.new(0, 4) }, player_container)
-
-    refresh_players()
+        player_container = new("ScrollingFrame", {
+            Size = UDim2.new(1, -8, 1, -8),
+            Position = UDim2.fromOffset(4, 4),
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            ScrollBarThickness = 2,
+            ScrollBarImageColor3 = Color3.fromRGB(70, 78, 90),
+            CanvasSize = UDim2.new(),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        }, wrap)
+        new("UIListLayout", { Padding = UDim.new(0, 4) }, player_container)
+        refresh_players()
+    end
 
     UI.button(page, "soltar skin", function()
         Skin.release()
@@ -2653,51 +2838,26 @@ local function page_visual(page)
     end)
 end
 
--- pagina xitadu --------------------------------------------------------
+-- pagina combate -------------------------------------------------------
 
 local function page_xitadu(page)
     local x = CFG.xitadu
 
-    UI.header(page, "xitadu")
+    UI.header(page, "alvos")
+    UI.cycle(page, "tratamento de time", { "auto", "time", "cor", "desligado" },
+        function() return x.team_mode end,
+        function(v) x.team_mode = v end)
     UI.label(page,
-        Xitadu.has_drawing()
-            and "desenho 2d ativo (Drawing). aimbot, silent e esp ficam em cima do render do cliente."
-            or "sem Drawing neste executor: so glow 3d e caixa 3d funcionam.",
-        THEME.dim, 32)
-
-    UI.header(page, "esp")
-    UI.toggle(page, "caixa 2d", function() return x.esp_box end, function(v)
-        x.esp_box = v
+        "auto: usa o time do jogo quando existe, senao a cor. desligado: todo mundo e inimigo.",
+        THEME.dim, 30)
+    UI.toggle(page, "mira ignora o proprio time", function() return x.aim_team end, function(v)
+        x.aim_team = v
     end)
-    UI.toggle(page, "nome", function() return x.esp_name end, function(v)
-        x.esp_name = v
-    end)
-    UI.toggle(page, "vida", function() return x.esp_health end, function(v)
-        x.esp_health = v
-    end)
-    UI.toggle(page, "distancia", function() return x.esp_dist end, function(v)
-        x.esp_dist = v
-    end)
-    UI.toggle(page, "esqueleto", function() return x.esp_skel end, function(v)
-        x.esp_skel = v
-    end)
-    UI.toggle(page, "linha ate o alvo", function() return x.esp_tracer end, function(v)
-        x.esp_tracer = v
-    end)
-    UI.toggle(page, "glow 3d", function() return x.esp_glow end, function(v)
-        x.esp_glow = v
-    end)
-    UI.toggle(page, "caixa 3d no mundo", function() return x.esp_box3d end, function(v)
-        x.esp_box3d = v
-    end)
-    UI.toggle(page, "circulo de fov", function() return x.esp_fov end, function(v)
-        x.esp_fov = v
-    end)
-    UI.toggle(page, "marcar time", function() return x.esp_team end, function(v)
+    UI.toggle(page, "esp esconde o proprio time", function() return x.esp_team end, function(v)
         x.esp_team = v
     end)
-    UI.slider(page, "cor do esp", 0, 360, 1, function() return x.esp_hue end, function(v)
-        x.esp_hue = v
+    UI.toggle(page, "marcar o proprio time em verde", function() return x.team_green end, function(v)
+        x.team_green = v
     end)
 
     UI.header(page, "mira")
@@ -2705,40 +2865,48 @@ local function page_xitadu(page)
         x.aim = v
         if v then Watch.arm("aimbot") end
     end)
+    UI.toggle(page, "grudar no alvo", function() return x.sticky end, function(v)
+        x.sticky = v
+        if not v then Xitadu.locked = nil end
+    end)
+    UI.toggle(page, "exigir linha de visao", function() return x.aim_wall end, function(v)
+        x.aim_wall = v
+    end)
+    UI.toggle(page, "atirar sozinho", function() return x.aim_auto end, function(v)
+        x.aim_auto = v
+    end)
+    UI.cycle(page, "ponto da mira", { "Cabeca", "Torso", "Raiz" },
+        function() return x.aim_part end,
+        function(v) x.aim_part = v end)
     UI.slider(page, "fov da mira", 20, 400, 5, function() return x.aim_fov end, function(v)
         x.aim_fov = v
     end)
     UI.slider(page, "suavidade", 0.05, 1, 0.05, function() return x.aim_smooth end, function(v)
         x.aim_smooth = v
     end)
-    UI.cycle(page, "ponto da mira", { "Cabeca", "Torso", "Raiz" },
-        function() return x.aim_part end,
-        function(v) x.aim_part = v end)
-    UI.toggle(page, "ignorar time", function() return x.aim_team end, function(v)
-        x.aim_team = v
-    end)
-    UI.toggle(page, "exigir linha de visao", function() return x.aim_wall end, function(v)
-        x.aim_wall = v
-    end)
-    UI.toggle(page, "grudar no alvo", function() return x.sticky end, function(v)
-        x.sticky = v
-        if not v then Xitadu.locked = nil end
-    end)
-    UI.toggle(page, "atirar sozinho", function() return x.aim_auto end, function(v)
-        x.aim_auto = v
-    end)
 
-    UI.header(page, "silent aim")
-    UI.toggle(page, "reescrever tiro", function() return x.silent end, function(v)
-        x.silent = v
-        if v then
-            Xitadu.install_silent()
-            if not Xitadu.hooked then
-                Toast.show("este executor nao tem hookmetamethod", 3)
-            end
-        end
+    UI.header(page, "esp")
+    UI.toggle(page, "ligar esp completo", function()
+        return x.esp_master
+    end, function(v)
+        x.esp_master = v
+        x.esp_box, x.esp_name, x.esp_health = v, v, v
+        x.esp_dist, x.esp_skel, x.esp_tracer = v, v, v
+        UI.refresh_all()
     end)
-    UI.toggle(page, "bala fantasma (atravessa parede)", function() return x.silent_ghost end, function(v)
+    UI.toggle(page, "caixa 2d", function() return x.esp_box end, function(v) x.esp_box = v end)
+    UI.toggle(page, "nome", function() return x.esp_name end, function(v) x.esp_name = v end)
+    UI.toggle(page, "vida", function() return x.esp_health end, function(v) x.esp_health = v end)
+    UI.toggle(page, "distancia", function() return x.esp_dist end, function(v) x.esp_dist = v end)
+    UI.toggle(page, "esqueleto", function() return x.esp_skel end, function(v) x.esp_skel = v end)
+    UI.toggle(page, "linha ate o alvo", function() return x.esp_tracer end, function(v) x.esp_tracer = v end)
+    UI.toggle(page, "glow 3d", function() return x.esp_glow end, function(v) x.esp_glow = v end)
+    UI.toggle(page, "caixa 3d no mundo", function() return x.esp_box3d end, function(v) x.esp_box3d = v end)
+    UI.toggle(page, "circulo de fov", function() return x.esp_fov end, function(v) x.esp_fov = v end)
+    UI.slider(page, "cor do esp", 0, 360, 1, function() return x.esp_hue end, function(v) x.esp_hue = v end)
+
+    UI.header(page, "bala fantasma")
+    UI.toggle(page, "atravessar parede no tiro", function() return x.silent_ghost end, function(v)
         x.silent_ghost = v
         if v then
             Xitadu.install_hook()
@@ -2746,6 +2914,10 @@ local function page_xitadu(page)
                 Toast.show("este executor nao tem hookmetamethod", 3)
             end
         end
+    end)
+    UI.toggle(page, "reescrever tiro (silent)", function() return x.silent end, function(v)
+        x.silent = v
+        if v then Xitadu.install_hook() end
     end)
     UI.input(page, "nomes de remote", "fire,shoot,hit", function(txt)
         x.silent_filter = txt
@@ -2756,16 +2928,38 @@ local function page_xitadu(page)
         x.recoil = v
     end)
 
-    UI.header(page, "controle")
-    UI.button(page, "desligar tudo do xitadu", function()
-        for key in pairs(x) do
-            if type(x[key]) == "boolean" then x[key] = false end
+    UI.header(page, "diagnostico")
+    UI.label(page, "se algo parar de funcionar, toca no teste e le o console do executor. ele diz exatamente onde quebrou.", THEME.dim, 32)
+    UI.button(page, "testar combate", function()
+        local cam = Workspace.CurrentCamera
+        local validos = 0
+        for _, pl in ipairs(Players:GetPlayers()) do
+            if pl ~= LocalPlayer and Xitadu.valid(pl) then validos += 1 end
         end
-        Xitadu.stop()
-        Xitadu.start()
+        local alvo = Xitadu.pick_target()
+        print("=== lunar.opt / teste de combate ===")
+        print("drawing 2d:", tostring(DRAWING ~= nil))
+        print("hookmetamethod:", tostring(hookmetamethod ~= nil))
+        print("hook instalado:", tostring(Xitadu.hooked))
+        print("camera:", tostring(cam ~= nil), tostring(cam and cam.CameraType))
+        print("servidor tem times:", tostring(game_has_teams()))
+        print("jogadores:", #Players:GetPlayers(), "| alvos validos:", validos)
+        print("esp ativo:", tostring(Xitadu.esp_active()), "| esp ligado:", tostring(x.esp_master))
+        print("mira:", tostring(x.aim), "| fov:", tostring(x.aim_fov), "| parte:", tostring(x.aim_part))
+        print("alvo atual:", alvo and alvo.pl and alvo.pl.Name or "nenhum")
+        print("===================================")
+        Toast.show("teste impresso no console", 3)
+    end, Color3.fromRGB(30, 36, 46))
+
+    UI.header(page, "controle")
+    UI.button(page, "desligar combate", function()
+        for key, val in pairs(x) do
+            if type(val) == "boolean" then x[key] = false end
+        end
+        Xitadu.locked = nil
         UI.refresh_all()
         save_config()
-        Toast.show("xitadu zerado", 2)
+        Toast.show("combate zerado", 2)
     end, Color3.fromRGB(44, 34, 34))
 end
 
@@ -2887,6 +3081,13 @@ local function page_config(page)
             CFG.mode = x
             apply_mode(x)
         end)
+
+    UI.header(page, "interface")
+    UI.toggle(page, "menu com rayfield", function() return CFG.usar_lib end, function(v)
+        CFG.usar_lib = v
+        Toast.show("roda o script de novo para trocar o menu", 3)
+    end)
+    UI.label(page, "se o rayfield nao baixar, o menu proprio entra no lugar sozinho.", THEME.dim, 26)
 
     UI.header(page, "comportamento")
     UI.toggle(page, "vigia de fps", function() return CFG.watchdog end, function(x)
@@ -3061,6 +3262,46 @@ genv.LunarOpt = {
     mov = Mov,
 }
 
+local function try_rayfield()
+    if not CFG.usar_lib then return false end
+    local okType, has_http = pcall(function() return type(game.HttpGet) == "function" end)
+    if not okType or not has_http then return false end
+    if type(loadstring) ~= "function" then return false end
+
+    local ok, src = pcall(function() return game:HttpGet(RAYFIELD_URL, true) end)
+    if not ok or type(src) ~= "string" or #src < 20000 then
+        print("[lunar.opt] rayfield nao baixou, usando menu proprio")
+        return false
+    end
+    local chunk = loadstring(src)
+    if not chunk then
+        print("[lunar.opt] rayfield nao compilou, usando menu proprio")
+        return false
+    end
+    local okLib, lib = pcall(chunk)
+    if not okLib or type(lib) ~= "table" or not lib.CreateWindow then
+        print("[lunar.opt] rayfield nao iniciou, usando menu proprio")
+        return false
+    end
+    local okWin, win = pcall(function()
+        return lib:CreateWindow({
+            Name = "lunar.opt " .. VERSION,
+            LoadingTitle = "lunar.opt",
+            LoadingSubtitle = "carregando modulos",
+            ConfigurationSaving = { Enabled = true, FolderName = "LunarOpt", FileName = "menu" },
+            KeySystem = false,
+        })
+    end)
+    if not okWin or not win then
+        print("[lunar.opt] rayfield recusou a janela, usando menu proprio")
+        return false
+    end
+
+    RF, RF_WINDOW = lib, win
+    print("[lunar.opt] menu rayfield ativo")
+    return true
+end
+
 local function guard(label, fn, ...)
     local ok, err = pcall(fn, ...)
     if not ok then
@@ -3071,6 +3312,8 @@ end
 
 guard("config", load_config)
 
+guard("rayfield", try_rayfield)
+
 local built = false
 guard("janela", function() built = build_window() end)
 
@@ -3079,7 +3322,7 @@ if built then
     guard("aba desempenho", function() page_desempenho(tab_pages["desempenho"]) end)
     guard("aba ambiente", function() page_ambiente(tab_pages["ambiente"]) end)
     guard("aba visual", function() page_visual(tab_pages["visual"]) end)
-    guard("aba xitadu", function() page_xitadu(tab_pages["xitadu"]) end)
+    guard("aba xitadu", function() page_xitadu(tab_pages["combate"]) end)
     guard("aba movimento", function() page_movimento(tab_pages["movimento"]) end)
     guard("painel de voo", build_fly_pad)
     guard("aba config", function() page_config(tab_pages["config"]) end)
