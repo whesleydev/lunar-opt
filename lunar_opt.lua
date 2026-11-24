@@ -26,7 +26,7 @@ end
 local genv = (getgenv and getgenv()) or {}
 if genv.LunarOpt then pcall(genv.LunarOpt.destroy) end
 
-local VERSION = "2.6"
+local VERSION = "2.7"
 
 print("[lunar.opt] carregando " .. VERSION .. " ...")
 
@@ -92,7 +92,7 @@ local CFG = {
             ambience = false, ambience_id = "", ambience_vol = 0.4, replicated = false,
             persp = "livre", persp_dist = 8 },
     mov = {
-        fly = false, fly_speed = 55,
+        fly = false, fly_speed = 55, fly_smooth = 0.35, fly_cam = true, fly_noclip = false,
         jump = false, jump_power = 140,
         speed = false, speed_value = 55,
         noclip = false,
@@ -850,7 +850,7 @@ end
 
 local refresh_status = nil
 
-local Mov = { bv = nil, axis = { f = 0, u = 0 }, pad = nil, bound = false, tick = 0 }
+local Mov = { bv = nil, axis = { f = 0, u = 0, s = 0 }, vel = nil, pad = nil, bound = false, tick = 0 }
 
 function Mov.release()
     if Mov.bv then
@@ -875,26 +875,63 @@ local function fly_step()
             pcall(function() Mov.bv:Destroy() end)
             Mov.bv = nil
         end
+        Mov.vel = nil
         return
     end
     if not hum or not root or not cam then return end
 
-    pcall(function() hum.PlatformStand = true end)
+    if hum.PlatformStand then
+        pcall(function() hum.PlatformStand = false end)
+    end
 
     if not Mov.bv or Mov.bv.Parent ~= root then
         if Mov.bv then pcall(function() Mov.bv:Destroy() end) end
         local bv = Instance.new("BodyVelocity")
         bv.Name = "LunarFly"
-        bv.MaxForce = Vector3.new(100000, 100000, 100000)
-        bv.P = 8000
+        bv.MaxForce = Vector3.new(1000000, 1000000, 1000000)
+        bv.P = 1250
         bv.Parent = root
         Mov.bv = bv
     end
 
-    local speed = CFG.mov.fly_speed or 55
-    local vel = cam.CFrame.LookVector * (Mov.axis.f * speed)
-        + Vector3.new(0, Mov.axis.u * speed, 0)
-    pcall(function() Mov.bv.Velocity = vel end)
+    local look = cam.CFrame.LookVector
+    local flat = Vector3.new(look.X, 0, look.Z)
+    if flat.Magnitude < 0.01 then
+        flat = Vector3.new(0, 0, -1)
+    else
+        flat = flat.Unit
+    end
+    local right = flat:Cross(Vector3.new(0, 1, 0))
+
+    local md = hum.MoveDirection
+    local fwd = md:Dot(flat) + (Mov.axis.f or 0)
+    local side = md:Dot(right) + (Mov.axis.s or 0)
+    local vert = Mov.axis.u or 0
+
+    local want
+    if CFG.mov.fly_cam ~= false then
+        want = look * fwd + right * side + Vector3.new(0, vert, 0)
+    else
+        want = flat * fwd + right * side + Vector3.new(0, vert, 0)
+    end
+
+    if want.Magnitude > 0.01 then
+        want = want.Unit * (CFG.mov.fly_speed or 55)
+    else
+        want = Vector3.new()
+    end
+
+    local alpha = math.clamp(CFG.mov.fly_smooth or 0.35, 0.05, 1)
+    Mov.vel = (Mov.vel or Vector3.new()):Lerp(want, alpha)
+    pcall(function() Mov.bv.Velocity = Mov.vel end)
+
+    if CFG.mov.fly_noclip then
+        for _, d in ipairs(char:GetDescendants()) do
+            if d:IsA("BasePart") then
+                pcall(function() d.CanCollide = false end)
+            end
+        end
+    end
 end
 
 local function slow_tick()
@@ -3098,10 +3135,19 @@ local function page_movimento(page)
             Mov.release()
         end
     end)
-    UI.slider(page, "velocidade do voo", 10, 200, 5, function() return m.fly_speed end, function(v)
+    UI.slider(page, "velocidade do voo", 10, 300, 5, function() return m.fly_speed end, function(v)
         m.fly_speed = v
     end)
-    UI.label(page, "com o voo ligado aparece um painel de setas no canto. segura para andar, solta para parar.", THEME.dim, 30)
+    UI.slider(page, "suavidade do voo", 0.1, 1, 0.05, function() return m.fly_smooth end, function(v)
+        m.fly_smooth = v
+    end)
+    UI.toggle(page, "voar para onde a camera olha", function() return m.fly_cam ~= false end, function(v)
+        m.fly_cam = v
+    end)
+    UI.toggle(page, "sem colisao voando", function() return m.fly_noclip end, function(v)
+        m.fly_noclip = v
+    end)
+    UI.label(page, "o direcional do jogo continua funcionando no ar. o painel de setas empurra por cima, some com ele se atrapalhar.", THEME.dim, 30)
 
     UI.toggle(page, "super pulo", function() return m.jump end, function(v)
         m.jump = v
