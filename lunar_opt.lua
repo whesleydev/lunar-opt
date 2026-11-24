@@ -26,7 +26,9 @@ end
 local genv = (getgenv and getgenv()) or {}
 if genv.LunarOpt then pcall(genv.LunarOpt.destroy) end
 
-local VERSION = "2.0"
+local VERSION = "2.1"
+
+print("[lunar.opt] carregando " .. VERSION .. " ...")
 
 -- utilitarios ----------------------------------------------------------
 
@@ -1874,7 +1876,19 @@ local function build_window()
     root.ResetOnSpawn = false
     root.IgnoreGuiInset = true
     root.DisplayOrder = 999
-    root.Parent = parent
+    local hooked = pcall(function() root.Parent = parent end)
+    if not hooked or not root.Parent then
+        local lp = Players.LocalPlayer
+        local pg = lp and lp:FindFirstChild("PlayerGui")
+        if not pg and lp then
+            pcall(function() pg = lp:WaitForChild("PlayerGui", 5) end)
+        end
+        if pg then pcall(function() root.Parent = pg end) end
+    end
+    if not root.Parent then
+        print("[lunar.opt] sem container de interface")
+        return false
+    end
     ui_root = root
 
     local vw = (Camera and Camera.ViewportSize.X) or 360
@@ -2716,26 +2730,37 @@ genv.LunarOpt = {
     xitadu = Xitadu,
 }
 
-load_config()
+local function guard(label, fn, ...)
+    local ok, err = pcall(fn, ...)
+    if not ok then
+        print("[lunar.opt] falhou em " .. label .. ": " .. tostring(err))
+    end
+    return ok
+end
 
-if build_window() then
-    build_tabs()
-    page_desempenho(tab_pages["desempenho"])
-    page_ambiente(tab_pages["ambiente"])
-    page_visual(tab_pages["visual"])
-    page_xitadu(tab_pages["xitadu"])
-    page_config(tab_pages["config"])
-    Xitadu.start()
+guard("config", load_config)
+
+local built = false
+guard("janela", function() built = build_window() end)
+
+if built then
+    guard("abas", build_tabs)
+    guard("aba desempenho", function() page_desempenho(tab_pages["desempenho"]) end)
+    guard("aba ambiente", function() page_ambiente(tab_pages["ambiente"]) end)
+    guard("aba visual", function() page_visual(tab_pages["visual"]) end)
+    guard("aba xitadu", function() page_xitadu(tab_pages["xitadu"]) end)
+    guard("aba config", function() page_config(tab_pages["config"]) end)
+    guard("xitadu", Xitadu.start)
 
     local start = CFG.tab
     if not tab_pages[start] then start = "desempenho" end
-    select_tab(start)
+    guard("selecionar aba", select_tab, start)
 
-    Perf.rebuild()
-    Env.apply()
-    Climate.apply()
-    Overlay.apply()
-    Ambience.apply()
+    guard("desempenho", Perf.rebuild)
+    guard("ambiente", Env.apply)
+    guard("clima", Climate.apply)
+    guard("overlay", Overlay.apply)
+    guard("som", Ambience.apply)
 
     if LocalPlayer then
         LocalPlayer.CharacterAdded:Connect(function()
@@ -2749,10 +2774,18 @@ if build_window() then
     end
 
     if CFG.mode == nil then
-        show_mode_modal()
+        guard("seletor de modo", show_mode_modal)
     else
         Toast.show("lunar.opt " .. VERSION .. " pronto  |  " .. string.upper(CFG.mode), 3)
     end
+else
+    print("[lunar.opt] interface nao montou — rodando so os modulos")
+    guard("desempenho", Perf.rebuild)
+    guard("ambiente", Env.apply)
+    guard("clima", Climate.apply)
+    guard("overlay", Overlay.apply)
+    guard("xitadu", Xitadu.start)
 end
 
-print(string.format("[lunar.opt] %s carregado — modo=%s", VERSION, tostring(CFG.mode)))
+print(string.format("[lunar.opt] %s carregado — modo=%s — ui=%s",
+    VERSION, tostring(CFG.mode), tostring(built)))
