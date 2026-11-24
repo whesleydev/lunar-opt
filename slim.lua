@@ -1,10 +1,11 @@
 -- lunar slim | mira, esp, camera, skin | roblox android
 -- arquivo unico, sem lib, sem config salvo. se algo falhar, o painel no topo diz o que.
 
-local VERSION = "slim 1.0"
+local VERSION = "slim 1.1"
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
 local lp = Players.LocalPlayer
 local cam = workspace.CurrentCamera
 local DRAWING = (type(Drawing) == "table") and Drawing or nil
@@ -14,6 +15,8 @@ local CFG = {
     lead = 1, speed = 1500, sticky = true, team = false, auto = false,
     esp_box = false, esp_name = false, esp_hp = false, esp_dist = false, esp_skel = false,
     persp = "livre", dist = 8,
+    ac_on = false, ac_cps = 12, ac_limit = 0, ac_mode = "os dois",
+    ac_x = 0, ac_y = 0,
 }
 
 local stats = { travadas = 0, erros = 0, alvos = 0 }
@@ -728,6 +731,56 @@ local function viewer_open(target)
     return true
 end
 
+
+-- auto click -----------------------------------------------------------
+
+local ac = { left = 0, clicks = 0, capturing = false }
+local paint_ac = nil
+
+local function click_once()
+    local mode = CFG.ac_mode
+    local pos = Vector2.new(CFG.ac_x, CFG.ac_y)
+
+    if mode == "os dois" or mode == "ferramenta" then
+        local char = lp and lp.Character
+        local tool = char and char:FindFirstChildOfClass("Tool")
+        if tool then pcall(function() tool:Activate() end) end
+    end
+
+    if mode == "os dois" or mode == "toque" then
+        local ok = pcall(function()
+            local vu = game:GetService("VirtualUser")
+            vu:ClickButton1(pos)
+        end)
+        if not ok then
+            pcall(function()
+                local vim = game:GetService("VirtualInputManager")
+                vim:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 1)
+                vim:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 1)
+            end)
+        end
+    end
+end
+
+task.spawn(function()
+    while true do
+        if not CFG.ac_on then
+            task.wait(0.1)
+        else
+            if CFG.ac_limit > 0 and ac.left <= 0 then
+                CFG.ac_on = false
+                if paint_ac then paint_ac() end
+                task.wait(0.1)
+            else
+                pcall(click_once)
+                ac.clicks += 1
+                if CFG.ac_limit > 0 then ac.left -= 1 end
+                task.wait(1 / math.clamp(CFG.ac_cps, 1, 30))
+            end
+        end
+    end
+end)
+
 local list_box = nil
 
 local function build_list()
@@ -851,6 +904,47 @@ cycle("perspectiva", { "livre", "primeira", "segunda", "terceira" },
     function() return CFG.persp end, function(v) CFG.persp = v end)
 stepper("distancia", 2, 20, 1, function() return CFG.dist end, function(v) CFG.dist = v end)
 
+section("auto click")
+paint_ac = toggle("ligar auto click", function() return CFG.ac_on end, function(v)
+    CFG.ac_on = v
+    if v then
+        ac.left = CFG.ac_limit > 0 and CFG.ac_limit or 0
+    end
+end)
+cycle("modo", { "os dois", "ferramenta", "toque" },
+    function() return CFG.ac_mode end, function(v) CFG.ac_mode = v end)
+stepper("cliques por segundo", 1, 30, 1, function() return CFG.ac_cps end, function(v) CFG.ac_cps = v end)
+stepper("quantidade (0 = infinito)", 0, 500, 10, function() return CFG.ac_limit end, function(v) CFG.ac_limit = v end)
+
+local coord_label = label("posicao: aguardando")
+
+local function paint_coords()
+    coord_label.Text = string.format("posicao: x %d  y %d", CFG.ac_x, CFG.ac_y)
+end
+paint_coords()
+
+button("capturar posicao na tela", function()
+    ac.capturing = false
+    status.Text = "toque no ponto que voce quer clicar"
+    task.delay(0.5, function() ac.capturing = true end)
+    task.delay(6, function()
+        if ac.capturing then
+            ac.capturing = false
+            status.Text = "captura cancelada"
+        end
+    end)
+end)
+
+button("usar o centro da tela", function()
+    local c = workspace.CurrentCamera
+    if not c then return end
+    CFG.ac_x = math.floor(c.ViewportSize.X / 2)
+    CFG.ac_y = math.floor(c.ViewportSize.Y / 2)
+    paint_coords()
+end)
+
+label("o clique vai pro jogo, nao pra interface. escolhe um ponto fora do painel.")
+
 section("skins")
 button("atualizar lista de jogadores", function()
     local n = build_list()
@@ -904,6 +998,9 @@ task.spawn(function()
         stats.alvos = alvos
         local text = string.format("draw %s | alvos %d | travadas %d | erros %d",
             DRAWING and "ok" or "sem", alvos, stats.travadas, stats.erros)
+        if CFG.ac_on or ac.clicks > 0 then
+            text = text .. string.format(" | cliques %d", ac.clicks)
+        end
         if last_error then
             text = text .. "\n" .. string.sub(last_error, 1, 46)
         end
@@ -914,6 +1011,18 @@ end)
 
 Players.PlayerAdded:Connect(function() task.delay(2, function() pcall(build_list) end) end)
 Players.PlayerRemoving:Connect(function() task.delay(2, function() pcall(build_list) end) end)
+
+UIS.InputBegan:Connect(function(input)
+    if not ac.capturing then return end
+    local t = input.UserInputType
+    if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
+        CFG.ac_x = math.floor(input.Position.X)
+        CFG.ac_y = math.floor(input.Position.Y)
+        ac.capturing = false
+        paint_coords()
+        status.Text = string.format("posicao salva: %d, %d", CFG.ac_x, CFG.ac_y)
+    end
+end)
 
 hide.MouseButton1Click:Connect(function()
     body.Visible = not body.Visible
