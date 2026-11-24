@@ -1,7 +1,7 @@
 -- lunar slim | mira, esp, camera, skin | roblox android
 -- arquivo unico, sem lib, sem config salvo. se algo falhar, o painel no topo diz o que.
 
-local VERSION = "slim 1.6"
+local VERSION = "slim 1.7"
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -1322,7 +1322,7 @@ end
 
 -- montagem da interface ------------------------------------------------
 
-label("mira - esp - invisivel - camera - auto click - andando - voo - leveza - skins")
+label("mira - esp - fantasma - camera - auto click - andando - voo - leveza - skins")
 
 section("mira")
 local paint_aim = toggle("aimbot", function() return CFG.aim end, function(v) CFG.aim = v end)
@@ -1347,12 +1347,12 @@ if not DRAWING then
     label("este executor nao expoe a API Drawing. sem ela o esp 2d nao desenha nada.")
 end
 
-section("invisibilidade")
-toggle("invisivel para npc", function() return CFG.ghost end, function(v)
+section("invisibilidade / fantasma")
+toggle("modo fantasma (invisivel para npc)", function() return CFG.ghost end, function(v)
     CFG.ghost = v
     if not v then pcall(ghost_show) end
 end)
-toggle("sumir do mapa", function() return CFG.offmap end, function(v)
+toggle("sumir do mapa (npc que segue posicao)", function() return CFG.offmap end, function(v)
     if v then
         offmap_enter()
         CFG.offmap = true
