@@ -26,7 +26,7 @@ end
 local genv = (getgenv and getgenv()) or {}
 if genv.LunarOpt then pcall(genv.LunarOpt.destroy) end
 
-local VERSION = "2.8"
+local VERSION = "2.9"
 
 print("[lunar.opt] carregando " .. VERSION .. " ...")
 
@@ -107,6 +107,10 @@ local CFG = {
         silent = false, silent_filter = "", silent_ghost = false,
         sticky = true, team_mode = "auto", esp_master = false, team_green = true,
         recoil = false,
+        ghost = false, offmap = false, offmap_height = 3000,
+        hide_tool = false, stow_tool = false, stow_radius = 35,
+        ac_on = false, ac_cps = 12, ac_limit = 0, ac_mode = "os dois",
+        ac_x = 0, ac_y = 0,
     },
 }
 
@@ -2988,6 +2992,221 @@ local function page_visual(page)
     end)
 end
 
+
+-- fantasma e auto click -----------------------------------------------
+
+local Ghost = { on = false, saved = nil }
+local Item = { hidden = {}, stowed = nil }
+local Auto = { left = 0, clicks = 0, budget = 0, capturing = false }
+
+function Ghost.hide()
+    local char = LocalPlayer and LocalPlayer.Character
+    if not char then return end
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BasePart") then
+            pcall(function()
+                d.Transparency = 1
+                d.CanQuery = false
+                d.CanTouch = false
+            end)
+        elseif d:IsA("Decal") or d:IsA("Texture") then
+            pcall(function() d.Transparency = 1 end)
+        end
+    end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        pcall(function()
+            hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+            hum.NameDisplayDistance = 0
+            hum.HealthDisplayDistance = 0
+        end)
+    end
+end
+
+function Ghost.show()
+    local char = LocalPlayer and LocalPlayer.Character
+    if not char then return end
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BasePart") then
+            pcall(function()
+                d.Transparency = 0
+                d.CanQuery = true
+                d.CanTouch = true
+            end)
+        elseif d:IsA("Decal") or d:IsA("Texture") then
+            pcall(function() d.Transparency = 0 end)
+        end
+    end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        pcall(function()
+            hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer
+            hum.NameDisplayDistance = 100
+            hum.HealthDisplayDistance = 100
+        end)
+    end
+end
+
+function Ghost.enter()
+    local char = LocalPlayer and LocalPlayer.Character
+    if not char then return end
+    Ghost.saved = char:GetPivot()
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BasePart") then pcall(function() d.Anchored = true end) end
+    end
+end
+
+function Ghost.exit()
+    local char = LocalPlayer and LocalPlayer.Character
+    if char then
+        for _, d in ipairs(char:GetDescendants()) do
+            if d:IsA("BasePart") then pcall(function() d.Anchored = false end) end
+        end
+        if Ghost.saved then pcall(function() char:PivotTo(Ghost.saved) end) end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if root then pcall(function() root.AssemblyLinearVelocity = Vector3.new() end) end
+    end
+    Ghost.saved = nil
+end
+
+function Ghost.near(maxd)
+    local char = LocalPlayer and LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+    for _, m in ipairs(Workspace:GetChildren()) do
+        if m:IsA("Model") and m ~= char and not Players:GetPlayerFromCharacter(m) then
+            local hum = m:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                local hrp = m:FindFirstChild("HumanoidRootPart")
+                if hrp and (hrp.Position - root.Position).Magnitude <= maxd then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+function Item.hide()
+    local char = LocalPlayer and LocalPlayer.Character
+    local tool = char and char:FindFirstChildOfClass("Tool")
+    if not tool then return end
+    for _, d in ipairs(tool:GetDescendants()) do
+        if d:IsA("BasePart") then
+            if Item.hidden[d] == nil then Item.hidden[d] = d.Transparency end
+            pcall(function()
+                d.Transparency = 1
+                d.CanQuery = false
+                d.CanTouch = false
+            end)
+        end
+    end
+end
+
+function Item.show()
+    for part, tr in pairs(Item.hidden) do
+        if part and part.Parent then
+            pcall(function()
+                part.Transparency = tr or 0
+                part.CanQuery = true
+                part.CanTouch = true
+            end)
+        end
+    end
+    Item.hidden = {}
+end
+
+function Item.stow_step()
+    local x = CFG.xitadu
+    local char = LocalPlayer and LocalPlayer.Character
+    if not char or not LocalPlayer then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local pack = LocalPlayer:FindFirstChild("Backpack")
+    local tool = char:FindFirstChildOfClass("Tool")
+
+    if x.stow_tool and Ghost.near(x.stow_radius or 35) then
+        if tool and pack then
+            Item.stowed = tool
+            pcall(function() tool.Parent = pack end)
+        end
+    elseif Item.stowed then
+        local t = Item.stowed
+        Item.stowed = nil
+        if t and t.Parent == pack and hum then
+            pcall(function() hum:EquipTool(t) end)
+        end
+    end
+end
+
+function Auto.click_once()
+    local x = CFG.xitadu
+    local pos = Vector2.new(x.ac_x, x.ac_y)
+    if x.ac_mode ~= "toque" then
+        local char = LocalPlayer and LocalPlayer.Character
+        local tool = char and char:FindFirstChildOfClass("Tool")
+        if tool then pcall(function() tool:Activate() end) end
+    end
+    if x.ac_mode ~= "ferramenta" then
+        local ok = pcall(function()
+            game:GetService("VirtualUser"):ClickButton1(pos)
+        end)
+        if not ok then
+            pcall(function()
+                local vim = game:GetService("VirtualInputManager")
+                vim:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 1)
+                vim:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 1)
+            end)
+        end
+    end
+end
+
+local ghost_tick = 0
+local ghost_was = false
+
+RunService.RenderStepped:Connect(function()
+    local x = CFG.xitadu
+    ghost_tick += 1
+    if ghost_tick % 20 ~= 0 then return end
+
+    if x.ghost then pcall(Ghost.hide) elseif ghost_was then pcall(Ghost.show) end
+    ghost_was = x.ghost
+
+    if x.hide_tool then pcall(Item.hide) elseif next(Item.hidden) then pcall(Item.show) end
+    pcall(Item.stow_step)
+end)
+
+RunService.Heartbeat:Connect(function(dt)
+    local x = CFG.xitadu
+    if x.offmap then
+        local char = LocalPlayer and LocalPlayer.Character
+        if char then
+            if not Ghost.saved then Ghost.saved = char:GetPivot() end
+            pcall(function() char:PivotTo(CFrame.new(0, x.offmap_height or 3000, 0)) end)
+        end
+    end
+
+    if not x.ac_on then
+        Auto.budget = 0
+        return
+    end
+    if x.ac_limit > 0 and Auto.left <= 0 then
+        x.ac_on = false
+        Auto.budget = 0
+        return
+    end
+    Auto.budget += (dt or 0.016) * math.clamp(x.ac_cps, 1, 1000)
+    local n = math.floor(Auto.budget)
+    if n <= 0 then return end
+    Auto.budget -= n
+    if n > 150 then n = 150 end
+    for _ = 1, n do
+        if x.ac_limit > 0 and Auto.left <= 0 then break end
+        pcall(Auto.click_once)
+        Auto.clicks += 1
+        if x.ac_limit > 0 then Auto.left -= 1 end
+    end
+end)
+
 -- pagina combate -------------------------------------------------------
 
 local function page_xitadu(page)
@@ -3079,9 +3298,73 @@ local function page_xitadu(page)
         x.silent_filter = txt
     end, x.silent_filter)
 
+    UI.header(page, "invisibilidade")
+    UI.toggle(page, "modo fantasma (invisivel para npc)", function() return x.ghost end, function(v)
+        x.ghost = v
+        if not v then pcall(Ghost.show) end
+    end)
+    UI.toggle(page, "sumir do mapa (npc por posicao)", function() return x.offmap end, function(v)
+        if v then Ghost.enter() x.offmap = true
+        else x.offmap = false Ghost.exit() end
+    end)
+    UI.slider(page, "altura do sumir do mapa", 500, 6000, 100, function() return x.offmap_height end, function(v)
+        x.offmap_height = v
+    end)
+    UI.toggle(page, "esconder item da mao", function() return x.hide_tool end, function(v)
+        x.hide_tool = v
+        if not v then pcall(Item.show) end
+    end)
+    UI.toggle(page, "guardar item quando npc perto", function() return x.stow_tool end, function(v)
+        x.stow_tool = v
+    end)
+    UI.slider(page, "distancia pra guardar o item", 10, 120, 5, function() return x.stow_radius end, function(v)
+        x.stow_radius = v
+    end)
+
+    UI.header(page, "auto click")
+    UI.toggle(page, "ligar auto click", function() return x.ac_on end, function(v)
+        x.ac_on = v
+        if v then Auto.left = (x.ac_limit > 0) and x.ac_limit or 0 end
+    end)
+    UI.cycle(page, "modo do clique", { "os dois", "ferramenta", "toque" }, function() return x.ac_mode end, function(v)
+        x.ac_mode = v
+    end)
+    UI.slider(page, "cliques por segundo", 1, 1000, 1, function() return x.ac_cps end, function(v)
+        x.ac_cps = v
+    end)
+    UI.slider(page, "quantidade (0 = infinito)", 0, 500, 10, function() return x.ac_limit end, function(v)
+        x.ac_limit = v
+    end)
+    UI.button(page, "capturar posicao do clique", function()
+        Auto.capturing = false
+        Toast.show("toque no ponto que voce quer clicar", 2)
+        task.delay(0.5, function() Auto.capturing = true end)
+        task.delay(6, function() Auto.capturing = false end)
+    end)
+    UI.button(page, "usar o centro da tela", function()
+        local cam = Workspace.CurrentCamera
+        if cam then
+            x.ac_x = math.floor(cam.ViewportSize.X / 2)
+            x.ac_y = math.floor(cam.ViewportSize.Y / 2)
+            Toast.show(string.format("posicao: %d, %d", x.ac_x, x.ac_y), 2)
+        end
+    end)
+    UI.label(page, "clique vai pro jogo, nao pra interface. x " .. 0 .. " y " .. 0, THEME.dim, 26)
+
     UI.header(page, "recoil")
     UI.toggle(page, "sem recuo", function() return x.recoil end, function(v)
         x.recoil = v
+    end)
+
+    UIS.InputBegan:Connect(function(input)
+        if not Auto.capturing then return end
+        local t = input.UserInputType
+        if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
+            x.ac_x = math.floor(input.Position.X)
+            x.ac_y = math.floor(input.Position.Y)
+            Auto.capturing = false
+            Toast.show(string.format("posicao salva: %d, %d", x.ac_x, x.ac_y), 2)
+        end
     end)
 
     UI.header(page, "diagnostico")
@@ -3159,7 +3442,7 @@ local function page_movimento(page)
     UI.toggle(page, "super velocidade", function() return m.speed end, function(v)
         m.speed = v
     end)
-    UI.slider(page, "velocidade", 16, 1000, 4, function() return m.speed_value end, function(v)
+    UI.slider(page, "velocidade", 16, 100000, 4, function() return m.speed_value end, function(v)
         m.speed_value = v
     end)
 
