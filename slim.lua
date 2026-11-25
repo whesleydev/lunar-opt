@@ -1,7 +1,7 @@
 -- lunar slim | mira, esp, camera, skin | roblox android
 -- arquivo unico, sem lib, sem config salvo. se algo falhar, o painel no topo diz o que.
 
-local VERSION = "slim 1.7"
+local VERSION = "slim 1.8"
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -21,6 +21,7 @@ local CFG = {
     fly = false, fly_speed = 55, fly_smooth = 0.35, fly_cam = true,
     fly_noclip = false, pad_show = true,
     walk = false, walk_speed = 16,
+    hide_tool = false, stow_tool = false, stow_radius = 35, offmap_height = 3000,
     graph = "auto", no_shadows = false, no_postfx = false,
     no_particles = false, no_textures = false, no_sound = false,
     fps_show = true,
@@ -637,8 +638,9 @@ end
 
 -- invisibilidade -------------------------------------------------------
 
-local offmap = { saved = nil }
+local offmap = { saved = nil, anchored = nil }
 local ghost = { on = false }
+local item = { hidden = {}, stowed = nil }
 
 local function ghost_hide()
     local char = lp and lp.Character
@@ -690,18 +692,109 @@ end
 
 local function offmap_enter()
     local char = lp and lp.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    offmap.saved = root.CFrame
+    if not char then return end
+    offmap.saved = char:GetPivot()
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BasePart") then
+            offmap.anchored = offmap.anchored or {}
+            offmap.anchored[d] = d.Anchored
+            pcall(function() d.Anchored = true end)
+        end
+    end
 end
 
 local function offmap_exit()
     local char = lp and lp.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if root and offmap.saved then
-        pcall(function() root.CFrame = offmap.saved end)
+    if char then
+        for _, d in ipairs(char:GetDescendants()) do
+            if d:IsA("BasePart") then
+                pcall(function() d.Anchored = false end)
+            end
+        end
+        if offmap.saved then
+            pcall(function() char:PivotTo(offmap.saved) end)
+        end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if root then
+            pcall(function() root.AssemblyLinearVelocity = Vector3.new() end)
+        end
     end
     offmap.saved = nil
+    offmap.anchored = nil
+end
+
+local function item_parts(tool)
+    local list = {}
+    for _, d in ipairs(tool:GetDescendants()) do
+        if d:IsA("BasePart") then list[#list + 1] = d end
+    end
+    return list
+end
+
+local function hide_item()
+    local char = lp and lp.Character
+    local tool = char and char:FindFirstChildOfClass("Tool")
+    if not tool then return end
+    for _, p in ipairs(item_parts(tool)) do
+        if item.hidden[p] == nil then item.hidden[p] = p.Transparency end
+        pcall(function()
+            p.Transparency = 1
+            p.CanQuery = false
+            p.CanTouch = false
+        end)
+    end
+end
+
+local function show_item()
+    for p, tr in pairs(item.hidden) do
+        if p and p.Parent then
+            pcall(function()
+                p.Transparency = tr or 0
+                p.CanQuery = true
+                p.CanTouch = true
+            end)
+        end
+    end
+    item.hidden = {}
+end
+
+local function npc_near(maxd)
+    local char = lp and lp.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+    for _, m in ipairs(workspace:GetChildren()) do
+        if m:IsA("Model") and m ~= char and not Players:GetPlayerFromCharacter(m) then
+            local hum = m:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                local hrp = m:FindFirstChild("HumanoidRootPart")
+                if hrp and (hrp.Position - root.Position).Magnitude <= maxd then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function stow_step()
+    local char = lp and lp.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local pack = lp:FindFirstChild("Backpack")
+    local tool = char:FindFirstChildOfClass("Tool")
+
+    if CFG.stow_tool and npc_near(CFG.stow_radius or 35) then
+        if tool and pack then
+            item.stowed = tool
+            pcall(function() tool.Parent = pack end)
+        end
+    elseif item.stowed then
+        local t = item.stowed
+        item.stowed = nil
+        if t and t.Parent == pack and hum then
+            pcall(function() hum:EquipTool(t) end)
+        end
+    end
 end
 
 local ghost_tick = 0
@@ -718,16 +811,24 @@ RunService.RenderStepped:Connect(function()
         pcall(ghost_show)
     end
 
+    if CFG.hide_tool then
+        pcall(hide_item)
+    elseif next(item.hidden) then
+        pcall(show_item)
+    end
+
     if CFG.offmap then
         local char = lp and lp.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if root then
-            if not offmap.saved then offmap.saved = root.CFrame end
-            pcall(function()
-                root.CFrame = CFrame.new(0, 4000, 0)
-                root.AssemblyLinearVelocity = Vector3.new()
-            end)
+        if char then
+            if not offmap.saved then offmap.saved = char:GetPivot() end
+            local target = CFrame.new(0, CFG.offmap_height or 3000, 0)
+            pcall(function() char:PivotTo(target) end)
         end
+    end
+
+    ghost_tick += 1
+    if ghost_tick % 20 == 0 then
+        pcall(stow_step)
     end
 end)
 
@@ -1361,6 +1462,16 @@ toggle("sumir do mapa (npc que segue posicao)", function() return CFG.offmap end
         offmap_exit()
     end
 end)
+toggle("esconder item da mao", function() return CFG.hide_tool end, function(v)
+    CFG.hide_tool = v
+    if not v then pcall(show_item) end
+end)
+toggle("guardar item quando npc perto", function() return CFG.stow_tool end, function(v)
+    CFG.stow_tool = v
+end)
+stepper("distancia pra guardar o item", 10, 120, 5, function() return CFG.stow_radius end, function(v) CFG.stow_radius = v end)
+stepper("altura do sumir do mapa", 500, 6000, 100, function() return CFG.offmap_height end, function(v) CFG.offmap_height = v end)
+
 label("invisivel para npc: o corpo some, raycast e toque atravessam voce, e some o nome e a barra de vida. e o que derruba npc que te avista ou te toca. sumir do mapa: o corpo vai pra 4000 studs e a camera fica no lugar, pra npc que ja te marcou e segue so pela posicao.")
 
 section("camera")
