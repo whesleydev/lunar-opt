@@ -1,7 +1,7 @@
 -- lunar slim | mira, esp, camera, skin | roblox android
 -- arquivo unico, sem lib, sem config salvo. se algo falhar, o painel no topo diz o que.
 
-local VERSION = "slim 1.8"
+local VERSION = "slim 1.9"
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -375,6 +375,106 @@ local function cycle(text, options, getv, setv)
         setv(v)
         value.Text = tostring(v)
     end
+end
+
+
+local function free_stepper(text, floorv, getv, setv)
+    local row = mk("Frame", {
+        Size = UDim2.new(1, -4, 0, 30),
+        BackgroundColor3 = Color3.fromRGB(20, 23, 29),
+        BorderSizePixel = 0,
+        LayoutOrder = next_order(),
+    }, body)
+    corner(row, 6)
+
+    mk("TextLabel", {
+        Size = UDim2.new(1, -200, 1, 0),
+        Position = UDim2.fromOffset(9, 0),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.Code,
+        TextSize = 10,
+        TextColor3 = Color3.fromRGB(188, 198, 212),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = text,
+    }, row)
+
+    local value = mk("TextLabel", {
+        Size = UDim2.fromOffset(62, 22),
+        Position = UDim2.new(1, -132, 0.5, -11),
+        BackgroundColor3 = Color3.fromRGB(26, 30, 38),
+        BorderSizePixel = 0,
+        Font = Enum.Font.Code,
+        TextSize = 10,
+        TextColor3 = Color3.fromRGB(150, 210, 175),
+        Text = tostring(getv()),
+    }, row)
+    corner(value, 5)
+
+    local function paint()
+        value.Text = tostring(math.floor(getv()))
+    end
+
+    local function set(v)
+        v = math.floor(v)
+        if v < floorv then v = floorv end
+        if v > 10000000 then v = 10000000 end
+        setv(v)
+        paint()
+    end
+
+    local function delta()
+        local v = getv()
+        if v < 100 then return 4 end
+        if v < 1000 then return 25 end
+        if v < 10000 then return 250 end
+        if v < 100000 then return 2500 end
+        return 25000
+    end
+
+    local function mkbtn(txt, off, cb)
+        local b = mk("TextButton", {
+            Size = UDim2.fromOffset(28, 22),
+            Position = UDim2.new(1, off, 0.5, -11),
+            BackgroundColor3 = Color3.fromRGB(32, 36, 44),
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            Font = Enum.Font.Code,
+            TextSize = 10,
+            TextColor3 = Color3.fromRGB(190, 200, 214),
+            Text = txt,
+        }, row)
+        corner(b, 5)
+        b.MouseButton1Click:Connect(function() pcall(cb) end)
+        return b
+    end
+
+    local menos = mkbtn("<", -162, function() set(getv() - delta()) end)
+    local mais = mkbtn(">", -66, function() set(getv() + delta()) end)
+    mkbtn("<10", -198, function() set(getv() / 10) end)
+    mkbtn("10>", -34, function() set(getv() * 10) end)
+
+    local function held(btn, dir)
+        local on = false
+        btn.InputBegan:Connect(function(input)
+            local t = input.UserInputType
+            if t ~= Enum.UserInputType.Touch and t ~= Enum.UserInputType.MouseButton1 then return end
+            on = true
+            task.spawn(function()
+                task.wait(0.4)
+                while on do
+                    set(getv() + dir * delta())
+                    task.wait(0.08)
+                end
+            end)
+        end)
+        btn.InputEnded:Connect(function() on = false end)
+    end
+
+    held(menos, -1)
+    held(mais, 1)
+
+    paint()
+    return paint
 end
 
 local function label(text)
@@ -1529,8 +1629,8 @@ toggle("velocidade de andar", function() return CFG.walk end, function(v)
         if hum then pcall(function() hum.WalkSpeed = 16 end) end
     end
 end)
-stepper("velocidade", 16, 1000, 4, function() return CFG.walk_speed end, function(v) CFG.walk_speed = v end)
-label("acima de 200 o jogo comeca a te jogar pra frente e travar em parede. segura o + para subir rapido.")
+free_stepper("velocidade", 16, function() return CFG.walk_speed end, function(v) CFG.walk_speed = v end)
+label("sem teto. use o 10> para multiplicar por dez e o <10 para dividir. o limite pratico e o servidor, nao o menu.")
 
 section("voo")
 toggle("voar", function() return CFG.fly end, function(v)
@@ -1541,7 +1641,7 @@ toggle("voar", function() return CFG.fly end, function(v)
         pcall(fly_off)
     end
 end)
-stepper("velocidade do voo", 10, 300, 5, function() return CFG.fly_speed end, function(v) CFG.fly_speed = v end)
+free_stepper("velocidade do voo", 5, function() return CFG.fly_speed end, function(v) CFG.fly_speed = v end)
 stepper("suavidade do voo", 0.1, 1, 0.05, function() return CFG.fly_smooth end, function(v) CFG.fly_smooth = v end)
 toggle("voar para onde a camera olha", function() return CFG.fly_cam end, function(v) CFG.fly_cam = v end)
 toggle("sem colisao voando", function() return CFG.fly_noclip end, function(v) CFG.fly_noclip = v end)
